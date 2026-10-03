@@ -1,0 +1,72 @@
+name: Native desktop packages
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  desktop:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            executable: dist/H8Studio/H8Studio.exe
+          - os: macos-15
+            executable: dist/H8Studio.app/Contents/MacOS/H8Studio
+          - os: macos-15-intel
+            executable: dist/H8Studio.app/Contents/MacOS/H8Studio
+    runs-on: ${{ matrix.os }}
+    env:
+      QT_QPA_PLATFORM: offscreen
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -r requirements-build.txt
+      - run: python -m unittest discover -s tests -v
+      - run: python tools/verify_ui.py
+      - run: python tools/synthetic_project.py test-output/fixture
+      - run: python tools/build_native.py
+      - name: Verify native package without an audio device
+        shell: bash
+        run: |
+          "${{ matrix.executable }}" --verify-no-audio test-output/fixture test-output/native-check.json
+          python -c "import json; assert json.load(open('test-output/native-check.json'))['ok']"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: H8Studio-${{ matrix.os }}
+          path: |
+            releases/*
+            test-output/native-check.json
+          if-no-files-found: error
+  fedora:
+    runs-on: ubuntu-latest
+    container: fedora:43
+    env:
+      QT_QPA_PLATFORM: offscreen
+    steps:
+      - name: Native build and audio dependencies
+        run: >-
+          dnf install -y git python3.12 python3.12-devel gcc binutils
+          portaudio libsndfile libX11 libXext libXrender libxcb libXcursor
+          libXi libXrandr libXtst libxkbcommon libxkbcommon-x11
+          xcb-util-cursor xcb-util-image xcb-util-keysyms xcb-util-wm
+          mesa-libGL fontconfig dbus-libs dejavu-sans-fonts alsa-plugins-pulseaudio
+      - uses: actions/checkout@v4
+      - run: python3.12 -m venv .venv
+      - run: .venv/bin/python -m pip install -r requirements-build.txt
+      - run: .venv/bin/python -m unittest discover -s tests -v
+      - run: .venv/bin/python tools/verify_ui.py
+      - run: .venv/bin/python tools/synthetic_project.py test-output/fixture
+      - run: bash build.sh
+      - run: |
+          dist/H8Studio/H8Studio --verify-no-audio test-output/fixture test-output/native-check.json
+          .venv/bin/python -c "import json; assert json.load(open('test-output/native-check.json'))['ok']"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: H8Studio-fedora-43-x86_64
+          path: |
+            releases/*
+            test-output/native-check.json
+          if-no-files-found: error

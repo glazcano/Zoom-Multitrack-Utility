@@ -1,0 +1,29 @@
+.venv/
+__pycache__/
+build/
+dist/
+Projects/
+test-output/
+*.spec
+releases/
+
+# Grabaciones y preferencias personales
+*.wav
+*.WAV
+*.flac
+*.FLAC
+*.h8prj
+*.H8PRJ
+*.zprj/
+*.h8studio.json
+.h8studio-templates.json
+docs/analisis-proyectos.json
+
+# Archivos locales del sistema y credenciales
+.DS_Store
+._*
+Thumbs.db
+Desktop.ini
+.env
+.env.*
+!.env.example
