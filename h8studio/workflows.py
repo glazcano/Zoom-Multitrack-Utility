@@ -5,7 +5,7 @@ import os
 import tempfile
 import numpy as np
 from .core import (ProjectError, title_settings, save_settings, validate_title,
-                   read_project, Renderer, export_stems, ExportCancelled)
+                   read_project, Renderer, export_stems, ExportCancelled, track_key, set_stereo_split)
 
 
 def atomic_json(path, data):
@@ -49,9 +49,11 @@ def apply_template(project, mapping):
     mapping = {k.casefold(): validate_title(v) for k, v in mapping.items()}
     for track in project.tracks:
         key = track.clips[0].path.stem.casefold()
+        if track.output_channel is not None:
+            key += '.l' if track.output_channel == 0 else '.r'
         if key in mapping:
             updates.append((track, mapping[key]))
-            labels[track.clips[0].path.name.casefold()] = mapping[key]
+            labels[track_key(track)] = mapping[key]
     if not updates:
         raise ProjectError('La plantilla no coincide con las entradas de este proyecto.')
     save_settings(project, data)
@@ -96,7 +98,7 @@ def analyze_project(project, cancel=None, progress=None):
     return rows + ['\nObservaciones de importación:'] + project.warnings
 
 
-def export_batch(paths, parent, fmt='WAV', create_rpp=True, progress=None, cancel=None):
+def export_batch(paths, parent, fmt='WAV', create_rpp=True, progress=None, cancel=None, split_stereo=None):
     paths = list(dict.fromkeys(str(Path(p).resolve()) for p in paths))
     if not paths:
         raise ProjectError('Marca al menos un proyecto para exportar.')
@@ -110,6 +112,8 @@ def export_batch(paths, parent, fmt='WAV', create_rpp=True, progress=None, cance
             break
         try:
             project = read_project(path)
+            if split_stereo is not None:
+                set_stereo_split(project, split_stereo, persist=False)
             def update(percent):
                 if progress:
                     progress(int((index+percent/100)*100/len(paths)))

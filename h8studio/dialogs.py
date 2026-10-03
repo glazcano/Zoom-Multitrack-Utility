@@ -76,7 +76,7 @@ class TemplatesDialog(QDialog):
         self.names.addItems(sorted(self.templates))
         layout.addWidget(self.names)
         self.table = QTableWidget(0, 2)
-        self.table.setHorizontalHeaderLabels(['Entrada original (Mic12, Tr1…)', 'Instrumento'])
+        self.table.setHorizontalHeaderLabels(['Entrada (Mic12, Mic12.L, Mic12.R…)', 'Instrumento'])
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         layout.addWidget(self.table)
         row = QHBoxLayout()
@@ -91,7 +91,7 @@ class TemplatesDialog(QDialog):
             self.show_mapping(self.templates[self.names.currentText()])
         else:
             self.names.setEditText('Mis instrumentos')
-            self.show_mapping({t.clips[0].path.stem: t.name for t in project.tracks})
+            self.show_mapping({t.clips[0].path.stem + ('' if t.output_channel is None else '.L' if t.output_channel == 0 else '.R'): t.name for t in project.tracks})
         hint = QLabel('Aplicar reemplaza las etiquetas de las entradas coincidentes de la toma abierta. Las demás pistas conservan su nombre. Guarda la plantilla para reutilizarla.')
         hint.setWordWrap(True)
         layout.addWidget(hint)

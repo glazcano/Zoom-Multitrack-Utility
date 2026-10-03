@@ -5,7 +5,8 @@
 Código común y recetas para Windows x64, Fedora 43 x86_64 y macOS Apple Silicon/Intel.
 Windows se compila y prueba aquí. Fedora y macOS necesitan ejecutar sus recetas en
 esos sistemas: no se generan binarios nativos de esos sistemas desde Windows.
-La automatización está guardada, pero no se ha subido ni ejecutado en GitHub.
+La automatización está disponible en GitHub Actions. La corrección de EGL para Fedora
+requiere una nueva ejecución para confirmar el paquete nativo.
 La reproducción física, Wayland y apertura desde Finder requieren pruebas nativas.
 
 ## Fedora
@@ -16,7 +17,7 @@ Extrae el ZIP fuente y abre una terminal en la carpeta H8Studio:
 sudo dnf install python3.12 python3.12-devel gcc binutils portaudio libsndfile \
   libX11 libXext libXrender libxcb libXcursor libXi libXrandr libXtst \
   libxkbcommon libxkbcommon-x11 xcb-util-cursor xcb-util-image \
-  xcb-util-keysyms xcb-util-wm mesa-libGL fontconfig dbus-libs \
+  xcb-util-keysyms xcb-util-wm mesa-libGL mesa-libEGL libglvnd-egl fontconfig dbus-libs \
   dejavu-sans-fonts alsa-plugins-pulseaudio
 python3.12 -m venv .venv
 .venv/bin/python -m pip install -r requirements-build.txt
@@ -87,7 +88,7 @@ Cada paquete nativo tiene un SHA-256 al lado. Mantén `_internal` junto al ejecu
 `.github/workflows/native-packages.yml` define cuatro compilaciones manuales:
 Windows, Fedora y ambas arquitecturas macOS. Cuando el código esté en un repositorio
 GitHub, ejecuta **Actions → Native desktop packages → Run workflow**. Solo genera
-artefactos de ejecución, no releases públicas. Este repositorio aún no está conectado.
+artefactos de ejecución, no releases públicas.
 
 El ZIP fuente y los paquetes excluyen Projects y tus audios. Las pruebas portables
 generan audio sintético. Las pruebas del corpus privado se omiten si no está disponible;

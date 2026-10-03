@@ -52,7 +52,7 @@ jobs:
           portaudio libsndfile libX11 libXext libXrender libxcb libXcursor
           libXi libXrandr libXtst libxkbcommon libxkbcommon-x11
           xcb-util-cursor xcb-util-image xcb-util-keysyms xcb-util-wm
-          mesa-libGL fontconfig dbus-libs dejavu-sans-fonts alsa-plugins-pulseaudio
+          mesa-libGL mesa-libEGL libglvnd-egl fontconfig dbus-libs dejavu-sans-fonts alsa-plugins-pulseaudio
       - uses: actions/checkout@v4
       - run: python3.12 -m venv .venv
       - run: .venv/bin/python -m pip install -r requirements-build.txt

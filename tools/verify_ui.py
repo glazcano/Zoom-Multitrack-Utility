@@ -5,6 +5,8 @@ import time
 import tempfile
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from PySide6.QtWidgets import QApplication
+from PySide6.QtCore import Qt
+from unittest.mock import patch
 from h8studio.ui import Window, STYLE
 from h8studio.core import read_project, waveform
 
@@ -40,8 +42,49 @@ app.processEvents()
 window.zoom.setCurrentIndex(0)
 window.stop()
 app.processEvents()
+# Use only disposable synthetic projects for checks that save channel preferences.
+source = make_project(Path(temporary.name)/'channels')
+window.scan(source.parent)
+project = read_project(source)
+window.loaded((project, window.project_peaks(project)))
+window.set_busy(False)
+
+def wait_job():
+    deadline = time.monotonic()+20
+    while window.job and time.monotonic() < deadline:
+        app.processEvents()
+        time.sleep(.01)
+    assert window.job is None, 'Channel job timed out'
+    app.processEvents()
+
+window.seek(12345)
+next(w for w in window.timeline.controls if getattr(w, 'text', lambda: '')() == '2 mono').click()
+wait_job()
+assert len(window.project.tracks) == 3
+assert window.player.position == 12345
+assert len(read_project(source).tracks) == 3
+window.timeline.controls[0].setChecked(True)
+assert window.project.tracks[0].mute and not window.project.tracks[1].mute
+Path('test-output').mkdir(exist_ok=True)
+assert window.grab().save('test-output/channels-mono.png')
+next(w for w in window.timeline.controls if getattr(w, 'text', lambda: '')() == 'Estéreo').click()
+wait_job()
+assert len(window.project.tracks) == 2
+assert window.player.position == 12345
+window.library.item(0).setCheckState(Qt.Checked)
+window.channel_mode.setCurrentIndex(2)
+with patch('h8studio.ui.show_report') as report:
+    window.channels_batch_button.click()
+    wait_job()
+    assert report.called
+assert len(read_project(source).tracks) == 3
+window.channel_mode.setCurrentIndex(1)
+window.load(source)
+wait_job()
+assert len(window.project.tracks) == 2
+assert len(read_project(source).tracks) == 2
 Path('test-output').mkdir(exist_ok=True)
 assert window.grab().save('test-output/app.png')
 window.close()
 temporary.cleanup()
-print('UI passed: library, waveform, seek, mute, zoom, export enablement, screenshot, clean shutdown.')
+print('UI passed: library, waveform, seek, mute, zoom, stereo/mono buttons, bulk channel settings, import override, screenshots, clean shutdown.')

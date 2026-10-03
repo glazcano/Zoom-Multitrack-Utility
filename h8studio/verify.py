@@ -11,14 +11,14 @@ def verify(project_path, report_path, audio=True):
         import numpy as np
         import soundfile as sf
         from PySide6.QtWidgets import QApplication
-        from .core import read_project, waveform, export_stems
+        from .core import read_project, export_stems
         from .ui import Window, STYLE
         app = QApplication([])
         app.setStyle('Fusion')
         app.setStyleSheet(STYLE)
         project = read_project(project_path)
         window = Window()
-        window.loaded((project, {str(c.path): waveform(c) for t in project.tracks for c in t.clips}))
+        window.loaded((project, window.project_peaks(project)))
         window.set_busy(False)
         window.resize(1320, 800)
         app.processEvents()
@@ -40,6 +40,8 @@ def verify(project_path, report_path, audio=True):
                 assert (output/'Proyecto.rpp').exists()
                 for i, t in enumerate(project.tracks):
                     source, _ = sf.read(str(t.clips[0].path), dtype='int32', always_2d=True)
+                    if t.output_channel is not None:
+                        source = source[:, t.output_channel:t.output_channel+1]
                     target, _ = sf.read(str(next(output.glob(f'{i+1:02d}_*.{fmt.lower()}'))), dtype='int32', always_2d=True)
                     a, b = project.export_range or (0, project.length)
                     assert np.array_equal(source[a:b], target)

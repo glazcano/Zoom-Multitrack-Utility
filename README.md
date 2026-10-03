@@ -1,122 +1,75 @@
 # H8 Studio
 
-Reproductor multipista y exportador de stems para proyectos Zoom H8. Paquete Windows
-verificado y código común preparado para empaquetar en Fedora y macOS.
-Consulta [los pasos por plataforma](docs/platforms.md) y sus pruebas pendientes.
+**From Zoom H8 recordings to a session ready for REAPER.**
 
-## Abrir
+Open `.h8prj` projects, listen to their tracks, and export aligned WAV or FLAC stems. A small preparation tool for recorded takes, with no editing or effects engine.
 
-Haz doble clic en **Abrir H8 Studio.cmd**, o abre `dist/H8Studio/H8Studio.exe`.
-No hace falta instalar Python ni FFmpeg para usar la versión compilada.
-Para mover la aplicación a otro equipo, copia **toda la carpeta H8Studio**, incluido `_internal`.
+## Quick start
 
-1. Pulsa **Explorar carpeta** para listar los proyectos de una carpeta o tarjeta copiada.
-2. Haz doble clic en un proyecto de la lista, usa **Abrir proyecto**, o arrastra un `.h8prj` o carpeta `.zprj`.
-3. Pulsa **Reproducir** o Espacio. Haz clic en la línea de tiempo para cambiar de posición.
-4. Usa volumen, mute y solo por pista, y el nivel de escucha general. **Inicio** detiene y vuelve a cero.
-5. Elige WAV o FLAC y pulsa **Exportar stems**. Se crea una carpeta nueva en el destino elegido.
-6. En Reaper importa todos los stems en pistas separadas desde **00:00**.
+1. Keep each `.h8prj` beside its original WAV files, inside its `.zprj` folder.
+2. Open a project, drop it onto the window, or browse a folder to build a project list.
+3. Press **Space** to play or pause. Click the timeline to seek; use mute, solo, and gain to check each track.
+4. Choose WAV or FLAC, leave **Crear .rpp** enabled, and export.
+5. Open `Proyecto.rpp` in REAPER, or import all stems on separate tracks at **00:00**.
 
-Los stems tienen igual duración, silencios de relleno y 24 bits. Conservan el número de canales de cada pista.
-Se exporta el audio original: los controles de escucha no alteran los stems. No se normaliza ni se aplican efectos.
-Para WAV mayores de 4 GiB se usa el contenedor RF64. La exportación se puede cancelar sin publicar archivos parciales.
-Los originales nunca se escriben y las exportaciones anteriores no se sobrescriben.
+The interface currently uses Spanish labels.
 
-### Cambiar el título del proyecto
+## Prepare your takes
 
-Abre un proyecto y pulsa **Cambiar título…**, junto al nombre. El título se actualiza
-en la lista de proyectos y se usa para nombrar la carpeta de stems y su informe de exportación.
-Se conserva al volver a abrir la app mediante un archivo `.h8studio.json` junto al `.h8prj`.
-Copia también ese archivo si trasladas el proyecto. No se renombran la carpeta original,
-el `.h8prj` ni los WAV, y el nombre que muestra la grabadora Zoom no cambia.
+- **Names and templates:** rename projects and instruments, or save reusable input-to-instrument mappings.
+- **Favorites and notes:** mark good takes and keep recording notes with the project.
+- **Export range:** choose one section for every track; exports start at zero and have matching lengths.
+- **Batch processing:** check projects in the library and export them together. A report lists completed, failed, and pending takes.
+- **Problem summary:** check for missing audio, silence, very low levels, and possible clipping.
 
-En cada pista pulsa **Nombre…** para poner la etiqueta del instrumento (por ejemplo,
-Guitarra, Voz o Batería). Se guarda en el mismo archivo auxiliar y se utiliza para
-nombrar el stem exportado. Los WAV originales conservan sus nombres.
+### Stereo or two mono tracks
 
-## Preparar y exportar sesiones
+Use **2 mono** on a stereo track to split it into **L** and **R**. Use **Estéreo** on either channel to join the view again. Each mono channel has its own name, mute, solo, and listening gain. Playback retains left/right placement; switching pauses playback and keeps the cursor position.
 
-- **Favorita, notas y tramo…** guarda una estrella, notas de hasta 10 000 caracteres
-  y, opcionalmente, el inicio y fin de exportación en segundos. Los botones de cursor
-  permiten usar la posición actual. Se guardan en el archivo auxiliar del proyecto.
-  Desmarca el tramo para volver a exportar la toma completa. La reproducción sigue
-  mostrando la grabación entera; una barra verde señala el tramo elegido.
-- **Plantillas…** permite crear, editar, guardar, eliminar y aplicar asignaciones de
-  entradas originales a instrumentos: `Mic12 → Ambiente`, `Tr1 → Guitarra`, etc.
-  El nombre de la entrada se escribe sin extensión y no distingue mayúsculas.
-  Se guardan en `.h8studio-templates.json` dentro de la carpeta explorada como biblioteca.
-  Aplicar afecta la toma abierta y conserva las etiquetas de entradas sin coincidencia.
-- **Exportar lote marcado…** procesa los proyectos cuyas casillas estén marcadas.
-  Los botones Todas, Ninguna y ★ facilitan la selección. Se usa el formato WAV/FLAC
-  y la opción Crear .rpp de la ventana principal, junto al tramo y etiquetas guardados
-  de cada proyecto. Cada lote tiene su propia carpeta y un informe `lote.json` con
-  proyectos completados, fallidos y pendientes. Un fallo no detiene los demás proyectos.
-  Al cancelar se conservan los proyectos ya terminados y se descarta la exportación
-  incompleta en curso; los pendientes quedan identificados.
-- **Crear .rpp**, activado por defecto, añade `Proyecto.rpp` junto a los stems.
-  Contiene pistas etiquetadas, mono/estéreo, sin efectos y con inicio en cero.
-  Abre ese archivo en Reaper y conserva junto a él los stems; usa rutas relativas.
-  Si recortaste, la duración del proyecto exportado corresponde solamente a ese tramo.
-- **Resumen de problemas…** analiza los proyectos marcados, o la toma abierta si
-  no hay ninguno marcado. Revisa las tomas completas, no solo el tramo de exportación.
-  Muestra WAV faltantes, errores de lectura, silencio digital, nivel RMS menor de
-  −60 dBFS y muestras cercanas al máximo (≥ −0,1 dBFS). Estas últimas son un indicio
-  de posible saturación, no una prueba concluyente. Incluye observaciones de importación.
+The library's channel selector also supports bulk use:
 
-Las exportaciones incluyen `export.json` con notas, favorito, frecuencia, duración
-y los límites originales del tramo en muestras. No se aplica la mezcla de escucha.
+| Choice | Behavior |
+| --- | --- |
+| **Usar elección guardada** | Keep each project's saved layout. |
+| **Una pista estéreo** | Open or export stereo files as one track. |
+| **Dos pistas mono (L/R)** | Open or export each stereo file as two mono tracks. |
 
-## Compatibilidad comprobada y límites
+Choose a mode before opening projects, or select projects and click **Aplicar canales al lote** to save it across the selection. During batch export, the selector overrides the output layout without changing saved preferences. Single-project export follows the visible tracks.
 
-Versión **0.3.0**. Se analizaron 30 archivos reales `ZOOM H8 ProjectFile v001` de 10 312 bytes:
-28 FIELD y 2 MUSIC, 44,1 kHz/24 bits, con 47 WAV disponibles.
+Split channels produce separate mono stems and REAPER tracks, panned left/right in the `.rpp`. Templates can label them individually with `Mic12.L` and `Mic12.R`; use `Mic12` for the stereo track.
 
-- Se leen nombre, duración en muestras, frecuencia, profundidad y las 12 asignaciones de archivos del H8.
-- En FIELD, se leen fecha y referencia temporal BWF y se resta el tiempo del primer WAV disponible del proyecto.
-- En las muestras MUSIC, los WAV son tomas completas de idéntica duración, con inicio común en cero.
-- Las carpetas se abren como **proyectos independientes**. La hora BWF no junta automáticamente grabaciones de distintas carpetas.
-- **No se ha descifrado una tabla de regiones, recortes ni overdubs MUSIC.** Ninguna muestra recibida contiene varias tomas desplazadas por pista. Esta versión no promete reconstruir ese tipo de edición. Muestra ese límite al abrir y rechaza MUSIC de duración desigual.
-- No se reproducen efectos, paneo o mezcla de la grabadora; los controles de escucha parten de valores propios.
-- WAV adicionales no asignados por el `.h8prj` se notifican y no se añaden por orden de nombre.
-- Los archivos `._*` de macOS no son audio y se ignoran.
-- Si faltan WAV se pueden escuchar las pistas disponibles, pero se bloquea la exportación para evitar stems incompletos. Restaura los WAV en la carpeta correspondiente y vuelve a abrir el proyecto.
-- La salida usa el dispositivo predeterminado de Windows; no requiere hardware Zoom conectado.
+## Your recordings stay intact
 
-Los 7 archivos faltantes del material recibido están en:
+Exports are dry **24-bit WAV or FLAC**, at the project's sample rate, with matching lengths and silence where needed. Listening gain, mute, and solo do not affect exported audio. Large WAVs use RF64.
 
-| Proyecto | WAV faltantes |
-|---|---|
-| F260830_020 | Mic12.WAV |
-| F260830_022 | Mic12.WAV, Tr2.WAV |
-| F260830_023 | Mic12.WAV |
-| F260830_024 | Mic12.WAV |
-| F260830_028 | Mic12.WAV, Tr2.WAV |
+Original audio and H8 project files are never rewritten. Names, notes, ranges, and channel choices live in a companion `.h8studio.json`; copy it with the project to keep your settings. Templates live in `.h8studio-templates.json` in the library folder. Each export gets a new folder and an `export.json` report.
 
-Para ampliar el lector a ediciones MUSIC hace falta una muestra con posiciones conocidas, idealmente el mismo proyecto antes y después de desplazar o recortar una toma.
+## Compatibility
 
-## Desarrollo y verificación
+- Reads the tested **H8 v001** format. FIELD takes align using BWF timestamps; supported MUSIC takes share a common start and duration.
+- MUSIC edits, regions, and overdubs are **not yet verified**. Separate project folders remain independent sessions.
+- Missing WAVs allow partial listening but block export. Unassigned WAVs are reported and excluded.
+- Windows builds have been tested locally. Fedora and macOS builds run through GitHub Actions; native playback still needs platform testing. macOS packages are not notarized.
 
-Python 3.12 de Windows:
+See [platform setup and packaging](docs/platforms.md) and [format notes](docs/formato-h8.md) for details (in Spanish).
 
-```powershell
+## Run or build
+
+For a packaged Windows build, run `H8Studio.exe` and keep its `_internal` folder alongside it. Python is not needed for packaged builds.
+
+For development, use **Python 3.12**:
+
+```sh
 python -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -r requirements-build.txt
-.\.venv\Scripts\python.exe main.py
-.\.venv\Scripts\python.exe -m unittest discover -s tests -v
-.\.venv\Scripts\python.exe tools\verify_ui.py
-.\build.ps1
+# Activate the environment: .venv\Scripts\Activate.ps1 on Windows,
+# or source .venv/bin/activate on Fedora/macOS.
+python -m pip install -r requirements-build.txt
+python main.py
+python -m unittest discover -s tests -v
+python tools/verify_ui.py
+python tools/build_native.py
 ```
 
-Pruebas: lectura de los 30 proyectos, detección de 7 archivos faltantes, posiciones/recortes/silencios con muestras sintéticas, mute/solo, exportaciones WAV/FLAC idénticas muestra a muestra al WAV real de prueba, cancelación y ausencia de sobrescritura.
-La interfaz se comprobó con Qt en Windows; el motor de reproducción se probó con la salida predeterminada y monitor silenciado, incluida pausa y búsqueda.
+Build on the target operating system, or run **Actions → Native desktop packages → Run workflow** on GitHub and download its artifacts. Fedora requires the system packages listed in the platform guide.
 
-La versión 0.2 añade pruebas de recorte muestra a muestra, persistencia de favorito/notas,
-edición de plantillas, lotes con fallos/cancelación y detección de niveles. La estructura
-de los `.rpp` y las referencias a sus stems están comprobadas; la apertura automática
-en Reaper quedó pendiente porque la instancia de prueba se detuvo al escanear plugins.
-
-Tecnologías: Python, PySide6/Qt, NumPy, SoundFile/libsndfile y sounddevice/PortAudio. Dependencias instaladas exclusivamente en `.venv`.
-
-## Notas del formato
-
-El mapa observado del archivo y las fuentes se documentan en `docs/formato-h8.md`.
+Built with PySide6, NumPy, SoundFile, and sounddevice.

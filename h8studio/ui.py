@@ -10,7 +10,7 @@ from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
     QLabel, QPushButton, QFileDialog, QListWidget, QListWidgetItem, QSplitter, QScrollArea,
     QSlider, QCheckBox, QComboBox, QMessageBox, QProgressBar, QInputDialog)
 
-from .core import read_project, waveform, export_stems, ExportCancelled, rename_project, rename_track, title_settings, ProjectError
+from .core import read_project, waveform, export_stems, ExportCancelled, rename_project, rename_track, title_settings, ProjectError, set_stereo_split
 from .audio import Player
 from .dialogs import PreparationDialog, TemplatesDialog, show_report
 from .workflows import export_batch, analyze_project
@@ -47,6 +47,7 @@ class Job(QThread):
 class Timeline(QWidget):
     seek = Signal(int)
     rename_requested = Signal(int)
+    split_requested = Signal(int)
     LEFT, TOP, ROW = 260, 44, 124
 
     def __init__(self):
@@ -60,6 +61,7 @@ class Timeline(QWidget):
     def set_project(self, project, peaks):
         self.project, self.peaks, self.position = project, peaks, 0
         for widget in self.controls:
+            widget.hide()
             widget.deleteLater()
         self.controls.clear()
         for i, t in enumerate(project.tracks):
@@ -67,13 +69,15 @@ class Timeline(QWidget):
             mute, solo = QCheckBox('Mute', self), QCheckBox('Solo', self)
             mute.setGeometry(18, y+53, 75, 28)
             solo.setGeometry(100, y+53, 75, 28)
+            mute.setChecked(t.mute)
+            solo.setChecked(t.solo)
             mute.toggled.connect(lambda value, track=t: setattr(track, 'mute', value))
             solo.toggled.connect(lambda value, track=t: setattr(track, 'solo', value))
             gain = QSlider(Qt.Horizontal, self)
             gain.setRange(-600, 60)
-            gain.setValue(0)
+            gain.setValue(round(200*math.log10(max(t.gain, .001))))
             gain.setGeometry(18, y+88, 155, 22)
-            value = QLabel('0.0 dB', self)
+            value = QLabel(f'{gain.value()/10:.1f} dB', self)
             value.setGeometry(183, y+85, 70, 25)
             def change(v, track=t, label=value):
                 track.gain = 10**(v/200)
@@ -90,6 +94,14 @@ class Timeline(QWidget):
             rename.clicked.connect(lambda checked=False, index=i: self.rename_requested.emit(index))
             rename.show()
             self.controls.append(rename)
+            if t.channels == 2 or t.output_channel is not None:
+                channels = QPushButton('2 mono' if t.channels == 2 else 'Estéreo', self)
+                channels.setGeometry(178, y+45, 72, 30)
+                channels.setStyleSheet('padding:3px;font-size:11px;')
+                channels.setToolTip('Alternar una pista estéreo y dos pistas mono L/R; también afecta a los stems')
+                channels.clicked.connect(lambda checked=False, index=i: self.split_requested.emit(index))
+                channels.show()
+                self.controls.append(channels)
         self.setMinimumHeight(max(360, self.TOP+len(project.tracks)*self.ROW+30))
         self.update()
 
@@ -150,7 +162,9 @@ class Timeline(QWidget):
                 p.setClipRect(rect.adjusted(7, 1, -7, -1))
                 p.drawText(QRectF(x1+10, y+15, max(1, x2-x1-20), 22), Qt.AlignLeft,
                            ('FALTA AUDIO · ' if c.missing else '')+c.path.name)
-                peaks = self.peaks.get(str(c.path))
+                peaks = self.peaks.get((str(c.path), c.channel))
+                if peaks is None:
+                    peaks = self.peaks.get(str(c.path))
                 if peaks is not None and len(peaks):
                     middle = y+76
                     # At zoomed-out scales aggregate peaks by visible pixel.
@@ -220,6 +234,16 @@ class Window(QMainWindow):
             button.clicked.connect(lambda checked=False, value=mode: self.check_projects(value))
             selection.addWidget(button)
         sl.addLayout(selection)
+        channel_label = QLabel('CANALES AL ABRIR / EXPORTAR LOTE')
+        channel_label.setWordWrap(True)
+        sl.addWidget(channel_label)
+        self.channel_mode = QComboBox()
+        self.channel_mode.addItems(['Usar elección guardada', 'Una pista estéreo', 'Dos pistas mono (L/R)'])
+        self.channel_mode.setToolTip('Al abrir guarda la elección. Al exportar un lote solo cambia esa exportación.')
+        sl.addWidget(self.channel_mode)
+        self.channels_batch_button = QPushButton('Aplicar canales al lote')
+        self.channels_batch_button.clicked.connect(self.channels_batch)
+        sl.addWidget(self.channels_batch_button)
         self.batch_button = QPushButton('Exportar lote marcado…')
         self.batch_button.clicked.connect(self.batch_dialog)
         sl.addWidget(self.batch_button)
@@ -280,6 +304,7 @@ class Window(QMainWindow):
         self.timeline = Timeline()
         self.timeline.seek.connect(self.seek)
         self.timeline.rename_requested.connect(self.rename_track_dialog)
+        self.timeline.split_requested.connect(self.toggle_channels)
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
         self.scroll.setWidget(self.timeline)
@@ -308,7 +333,7 @@ class Window(QMainWindow):
         self.export_button.clicked.connect(self.export_dialog)
         bottom.addWidget(self.export_button)
         ml.addLayout(bottom)
-        footer = QLabel('Stems originales: sin volumen, mute ni solo · mismo inicio y duración · mono/estéreo conservado')
+        footer = QLabel('Stems originales: sin volumen, mute ni solo · mismo inicio y duración · canales según la elección')
         footer.setWordWrap(True)
         footer.setStyleSheet('color:#8fa0b5;font-size:11px')
         ml.addWidget(footer)
@@ -353,6 +378,9 @@ class Window(QMainWindow):
         for w in (self.prepare_button, self.templates_button, self.problems_button):
             w.setEnabled(not busy and self.project is not None)
         self.batch_button.setEnabled(not busy)
+        self.channels_batch_button.setEnabled(not busy)
+        self.channel_mode.setEnabled(not busy)
+        self.timeline.setEnabled(not busy)
         self.rename_button.setEnabled(not busy and self.project is not None)
         for w in (self.open_button, self.folder_button, self.library):
             w.setEnabled(not busy)
@@ -458,8 +486,67 @@ class Window(QMainWindow):
             return
         self.player.pause()
         fmt, rpp = ('WAV' if self.format.currentIndex() == 0 else 'FLAC'), self.rpp.isChecked()
+        split_stereo = self.selected_channel_mode()
         self.status.setText(f'Exportando {len(paths)} proyectos con sus tramos guardados…')
-        self.start_job(lambda job: export_batch(paths, Path(folder), fmt, rpp, job.progress.emit, job.cancel), self.batch_finished, exporting=True)
+        self.start_job(lambda job: export_batch(paths, Path(folder), fmt, rpp, job.progress.emit, job.cancel, split_stereo=split_stereo), self.batch_finished, exporting=True)
+
+    def selected_channel_mode(self):
+        return (None, False, True)[self.channel_mode.currentIndex()]
+
+    def channels_batch(self):
+        if self.job:
+            return
+        paths, mode = self.checked_paths(), self.selected_channel_mode()
+        if not paths or mode is None:
+            self.job_error('Marca proyectos y elige una pista estéreo o dos pistas mono.')
+            return
+        self.player.pause()
+        current = self.project
+        position = self.player.position
+        def work(job):
+            rows, refreshed = [], None
+            for index, path in enumerate(paths):
+                if job.cancel.is_set():
+                    rows.append('Cancelado: las elecciones ya guardadas se conservan.')
+                    break
+                try:
+                    p = current if current and current.path == Path(path).resolve() else read_project(path)
+                    set_stereo_split(p, mode)
+                    if p is current:
+                        refreshed = (p, self.project_peaks(p))
+                    rows.append(f'{Path(path).stem}: canales guardados')
+                except Exception as exc:
+                    rows.append(f'{Path(path).stem}: ERROR: {exc}')
+                job.progress.emit(round(100*(index+1)/len(paths)))
+            return rows, refreshed
+        def finished(result):
+            rows, refreshed = result
+            if refreshed:
+                self.loaded(refreshed)
+                self.player.position = position
+            show_report(self, 'Canales del lote', '\n'.join(rows))
+        self.start_job(work, finished, exporting=True)
+
+    @staticmethod
+    def project_peaks(project):
+        return {(str(c.path), c.channel): waveform(c) for t in project.tracks for c in t.clips}
+
+    def toggle_channels(self, index):
+        if not self.project or self.job:
+            return
+        self.player.pause()
+        position = self.player.position
+        track = self.project.tracks[index]
+        try:
+            set_stereo_split(self.project, track.channels == 2, track.clips[0].path.name)
+        except (ProjectError, OSError) as exc:
+            self.job_error(str(exc))
+            return
+        def finished(peaks):
+            self.loaded((self.project, peaks))
+            self.player.position = position
+            self.status.setText('Canales guardados · la exportación usará las pistas visibles')
+        self.start_job(lambda job: self.project_peaks(self.project), finished)
 
     def batch_finished(self, result):
         lines = [f'Exportados: {len(result["completed"])}', f'Fallidos: {len(result["failed"])}',
@@ -516,9 +603,12 @@ class Window(QMainWindow):
             return
         self.player.pause()
         self.status.setText('Leyendo proyecto y formas de onda…')
+        mode = self.selected_channel_mode()
         def work(job):
             project = read_project(path)
-            peaks = {str(c.path): waveform(c) for t in project.tracks for c in t.clips}
+            if mode is not None:
+                set_stereo_split(project, mode)
+            peaks = self.project_peaks(project)
             return project, peaks
         self.start_job(work, self.loaded)
 

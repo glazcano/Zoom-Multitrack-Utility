@@ -16,7 +16,7 @@ def write_rpp(path, project, files, frames, fmt):
             '  TEMPO 120', '  MASTER_VOLUME 1', '  TIMELOCKMODE 1']
     for track, filename in zip(project.tracks, files):
         rows += [f'  <TRACK {{{str(uuid.uuid4()).upper()}}}', f'    NAME {quoted(track.name)}',
-                 '    VOLPAN 1 0', '    MUTESOLO 0 0 0', '    <ITEM', '      POSITION 0',
+                 f'    VOLPAN 1 {0 if track.output_channel is None else -1 if track.output_channel == 0 else 1}', '    MUTESOLO 0 0 0', '    <ITEM', '      POSITION 0',
                  f'      LENGTH {frames/project.rate:.12f}', '      SOFFS 0', '      LOOP 0',
                  '      VOLPAN 1 0 1 -1', '      FADEIN 1 0 0', '      FADEOUT 1 0 0',
                  f'      NAME {quoted(track.name)}', f'      <SOURCE {"FLAC" if fmt == "FLAC" else "WAVE"}',

@@ -1,7 +1,7 @@
 """H8 v001 reader and sample-accurate, bounded-memory audio rendering."""
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from contextlib import ExitStack
 import datetime as dt
@@ -67,7 +67,7 @@ def rename_track(project: 'Project', track: 'Track', title: str):
     if not any(t is track for t in project.tracks) or not track.clips:
         raise ProjectError('La pista no pertenece al proyecto.')
     data = title_settings(project.path)
-    data.setdefault('tracks', {})[track.clips[0].path.name.casefold()] = title
+    data.setdefault('tracks', {})[track_key(track)] = title
     save_settings(project, data)
     track.name = title
 
@@ -96,6 +96,7 @@ class Clip:
     channels: int
     source_start: int = 0
     missing: bool = False
+    channel: int | None = None
 
 
 @dataclass
@@ -105,6 +106,10 @@ class Track:
     gain: float = 1.0
     mute: bool = False
     solo: bool = False
+
+    @property
+    def output_channel(self):
+        return self.clips[0].channel if self.clips else None
 
     @property
     def channels(self):
@@ -123,10 +128,53 @@ class Project:
     favorite: bool = False
     notes: str = ''
     export_range: tuple[int, int] | None = None
+    source_tracks: list[Track] = field(default_factory=list, repr=False)
+    split_pairs: dict = field(default_factory=dict, repr=False)
 
     @property
     def length(self):
         return max([self.frames] + [c.start + c.frames for t in self.tracks for c in t.clips])
+
+
+def track_key(track):
+    key = track.clips[0].path.name.casefold()
+    return key if track.output_channel is None else key + ('#L' if track.output_channel == 0 else '#R')
+
+
+def set_stereo_split(project, split, filename=None, persist=True):
+    """Switch source stereo tracks to virtual L/R tracks without rewriting audio.
+
+    Keep both representations in memory so monitor controls survive toggling.
+    Only channel layout and labels persist across application sessions.
+    """
+    if not project.source_tracks:
+        project.source_tracks = list(project.tracks)
+    settings = title_settings(project.path)
+    modes = dict(settings.get('split_stereo', {}))
+    labels = settings.get('tracks', {})
+    for source in project.source_tracks:
+        key = source.clips[0].path.name.casefold()
+        if source.channels == 2 and (filename is None or key == filename.casefold()):
+            modes[key] = bool(split)
+    if persist:
+        settings['split_stereo'] = modes
+        save_settings(project, settings)
+    tracks = []
+    for source in project.source_tracks:
+        key = source.clips[0].path.name.casefold()
+        if source.channels != 2 or not modes.get(key, False):
+            tracks.append(source)
+            continue
+        if key not in project.split_pairs:
+            pair = []
+            for channel, suffix in enumerate(('L', 'R')):
+                clips = [replace(c, channels=1, channel=channel) for c in source.clips]
+                track = Track(source.name + ' ' + suffix, clips, source.gain, source.mute, source.solo)
+                track.name = labels.get(track_key(track), track.name)
+                pair.append(track)
+            project.split_pairs[key] = pair
+        tracks.extend(project.split_pairs[key])
+    project.tracks = tracks
 
 
 def bwf_reference(path: Path):
@@ -241,6 +289,10 @@ def read_project(path: str | Path) -> Project:
         project.favorite, project.notes = favorite, notes
     except ProjectError as exc:
         raise ProjectError(f'Preferencias de preparación inválidas: {exc}') from exc
+    modes = settings.get('split_stereo', {})
+    if not isinstance(modes, dict) or any(not isinstance(k, str) or type(v) is not bool for k, v in modes.items()):
+        raise ProjectError('Preferencias de canales inválidas.')
+    set_stereo_split(project, False, filename='', persist=False)
     return project
 
 
@@ -289,6 +341,8 @@ class Renderer:
             data = f.read(hi-lo, dtype='float64', always_2d=True)
             if len(data) != hi-lo:
                 raise ProjectError(f'Audio truncado: {c.path.name}')
+            if c.channel is not None:
+                data = data[:, c.channel:c.channel+1]
             if c.channels == 1 and track.channels == 2:
                 data = np.repeat(data, 2, axis=1)
             out[lo-start:hi-start] += data
@@ -302,7 +356,12 @@ class Renderer:
                 continue
             block = self.track_block(t, start, count)*t.gain
             if t.channels == 1:
-                block = np.repeat(block, 2, axis=1)
+                if t.output_channel is None:
+                    block = np.repeat(block, 2, axis=1)
+                else:
+                    routed = np.zeros((count, 2), dtype=np.float64)
+                    routed[:, t.output_channel] = block[:, 0]
+                    block = routed
             out += block
         return out*master
 
@@ -358,6 +417,10 @@ def export_stems(project: Project, parent: Path, fmt='WAV', progress=None, cance
                     'format': fmt, 'bits': 24, 'alignment': project.alignment,
                     'processing': 'Dry stems; gain, mute, solo and monitor level ignored.',
                     'warnings': project.warnings, 'files': files}
+        manifest['tracks'] = [{'name': t.name, 'file': filename,
+                               'source': t.clips[0].path.name,
+                               'source_channel': None if t.output_channel is None else ('L', 'R')[t.output_channel]}
+                              for t, filename in zip(project.tracks, files)]
         (staging/'export.json').write_text(json.dumps(manifest, indent=2, ensure_ascii=False), encoding='utf-8')
         if create_rpp:
             from .reaper import write_rpp
@@ -385,6 +448,8 @@ def waveform(clip: Clip, bins=1600):
         while remaining:
             count = min(step*128, remaining)
             data = f.read(count, dtype='float32', always_2d=True)
+            if clip.channel is not None:
+                data = data[:, clip.channel:clip.channel+1]
             if not len(data):
                 break
             for j in range(0, len(data), step):
