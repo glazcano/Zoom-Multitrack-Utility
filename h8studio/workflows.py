@@ -98,7 +98,7 @@ def analyze_project(project, cancel=None, progress=None):
     return rows + ['\nObservaciones de importación:'] + project.warnings
 
 
-def export_batch(paths, parent, fmt='WAV', create_rpp=True, progress=None, cancel=None, split_stereo=None):
+def export_batch(paths, parent, fmt='WAV', create_rpp=True, progress=None, cancel=None, split_stereo=None, portable=False, naming='track'):
     paths = list(dict.fromkeys(str(Path(p).resolve()) for p in paths))
     if not paths:
         raise ProjectError('Marca al menos un proyecto para exportar.')
@@ -117,7 +117,7 @@ def export_batch(paths, parent, fmt='WAV', create_rpp=True, progress=None, cance
             def update(percent):
                 if progress:
                     progress(int((index+percent/100)*100/len(paths)))
-            output = export_stems(project, report_path, fmt, update, cancel, create_rpp=create_rpp)
+            output = export_stems(project, report_path, fmt, update, cancel, create_rpp=create_rpp, portable=portable, naming=naming)
             result['completed'].append({'source': path, 'output': str(output)})
         except ExportCancelled:
             result['cancelled'] = True

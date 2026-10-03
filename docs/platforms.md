@@ -6,7 +6,7 @@ Código común y recetas para Windows x64, Fedora 43 x86_64 y macOS Apple Silico
 Windows se compila y prueba aquí. Fedora y macOS necesitan ejecutar sus recetas en
 esos sistemas: no se generan binarios nativos de esos sistemas desde Windows.
 La automatización está disponible en GitHub Actions. La corrección de EGL para Fedora
-requiere una nueva ejecución para confirmar el paquete nativo.
+pasó las pruebas nativas de importación Qt y empaquetado en la versión 0.4.0.
 La reproducción física, Wayland y apertura desde Finder requieren pruebas nativas.
 
 ## Fedora
@@ -88,7 +88,11 @@ Cada paquete nativo tiene un SHA-256 al lado. Mantén `_internal` junto al ejecu
 `.github/workflows/native-packages.yml` define cuatro compilaciones manuales:
 Windows, Fedora y ambas arquitecturas macOS. Cuando el código esté en un repositorio
 GitHub, ejecuta **Actions → Native desktop packages → Run workflow**. Solo genera
-artefactos de ejecución, no releases públicas.
+artefactos de ejecución y, al finalizar las cuatro plataformas correctamente, una
+release en borrador con los cuatro paquetes y sus checksums. Revisa el borrador en
+Releases y pulsa Publish release para publicarlo. El workflow no lo publica automáticamente.
+Cada versión se toma de `h8studio/__init__.py`; las notas están en `docs/release-notes.md`.
+Una repetición solo puede actualizar un borrador del mismo commit; nunca una release publicada.
 
 El ZIP fuente y los paquetes excluyen Projects y tus audios. Las pruebas portables
 generan audio sintético. Las pruebas del corpus privado se omiten si no está disponible;

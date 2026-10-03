@@ -4,17 +4,19 @@ import math
 import sys
 import threading
 
-from PySide6.QtCore import Qt, QThread, Signal, QTimer, QRectF, QEvent
+from PySide6.QtCore import Qt, QThread, Signal, QTimer, QRectF, QEvent, QStandardPaths
 from PySide6.QtGui import QColor, QPainter, QPen, QFont, QKeySequence, QShortcut, QFontDatabase
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QFileDialog, QListWidget, QListWidgetItem, QSplitter, QScrollArea,
-    QSlider, QCheckBox, QComboBox, QMessageBox, QProgressBar, QInputDialog)
+    QSlider, QCheckBox, QComboBox, QMessageBox, QProgressBar, QInputDialog, QLineEdit)
 
 from .core import read_project, waveform, export_stems, ExportCancelled, rename_project, rename_track, title_settings, ProjectError, set_stereo_split
 from .audio import Player
-from .dialogs import PreparationDialog, TemplatesDialog, show_report
+from .dialogs import PreparationDialog, TemplatesDialog, show_report, LocateDialog, ExportOptionsDialog
 from .workflows import export_batch, analyze_project
 from .platforms import project_files
+from .preferences import Preferences, export_options, library_entry, matches_entry
+from .relink import find_candidates, link_media, missing_sources
 
 COLORS = ['#55d9b2', '#70b4fb', '#c79bf2', '#f4c276', '#f5899e']
 
@@ -48,7 +50,7 @@ class Timeline(QWidget):
     seek = Signal(int)
     rename_requested = Signal(int)
     split_requested = Signal(int)
-    LEFT, TOP, ROW = 260, 44, 124
+    LEFT, TOP, ROW = 260, 44, 144
 
     def __init__(self):
         super().__init__()
@@ -56,6 +58,7 @@ class Timeline(QWidget):
         self.peaks = {}
         self.position = 0
         self.controls = []
+        self.meter_values = []
         self.setMinimumSize(800, 360)
 
     def set_project(self, project, peaks):
@@ -149,6 +152,13 @@ class Timeline(QWidget):
             p.setFont(QFont(QApplication.font().family(), 9))
             p.setPen(QColor('#8fa0b5'))
             p.drawText(18, y+44, 'Estéreo · 2 canales' if t.channels == 2 else 'Mono · 1 canal')
+            peak = self.meter_values[i] if i < len(self.meter_values) else 0
+            db = 20*math.log10(peak) if peak > 0 else -90
+            p.fillRect(QRectF(18, y+120, 155, 6), QColor('#34465d'))
+            p.fillRect(QRectF(18, y+120, 155*max(0, min(1, (db+60)/60)), 6),
+                       QColor('#f5899e' if peak >= 1 else '#55d9b2'))
+            p.setPen(QColor('#f5899e' if peak >= 1 else '#8fa0b5'))
+            p.drawText(183, y+128, f'{db:.1f}' if peak else '−∞ dBFS')
             for c in t.clips:
                 x1, x2 = self.x_for(c.start), self.x_for(c.start+c.frames)
                 rect = QRectF(x1+1, y+10, max(2, x2-x1-2), self.ROW-21)
@@ -189,14 +199,24 @@ class Timeline(QWidget):
 
 
 class Window(QMainWindow):
-    def __init__(self, initial=None):
+    def __init__(self, initial=None, state_path=None):
         super().__init__()
+        if state_path is None:
+            state_path = Path(QStandardPaths.writableLocation(QStandardPaths.AppConfigLocation))/'preferences.json'
+        self.preferences = Preferences(state_path)
+        self.session = self.preferences.data.get('session', {})
+        if not isinstance(self.session, dict):
+            self.session = {}
+        self.restore_position = None
+        self.portable_delivery = False
+        self.export_naming = 'track'
         self.setWindowTitle('H8 Studio · Proyectos Zoom')
         self.resize(1320, 800)
         self.setMinimumSize(920, 620)
         self.player = Player()
         self.project = None
         self.job = None
+        self.after_job = None
         self.library_root = None
         self.setAcceptDrops(True)
         root = QWidget()
@@ -223,6 +243,15 @@ class Window(QMainWindow):
         sl.setContentsMargins(0, 0, 14, 0)
         self.library_label = QLabel('PROYECTOS')
         sl.addWidget(self.library_label)
+        self.search = QLineEdit()
+        self.search.setPlaceholderText('Buscar nombre, notas o carpeta…')
+        self.search.setClearButtonEnabled(True)
+        self.search.textChanged.connect(self.filter_library)
+        sl.addWidget(self.search)
+        self.library_filter = QComboBox()
+        self.library_filter.addItems(['Todos los proyectos', '★ Favoritos', 'Falta audio / error de lectura'])
+        self.library_filter.currentIndexChanged.connect(self.filter_library)
+        sl.addWidget(self.library_filter)
         self.library = QListWidget()
         self.library.setMinimumWidth(190)
         self.library.itemActivated.connect(lambda item: self.load(item.data(Qt.UserRole)))
@@ -247,7 +276,7 @@ class Window(QMainWindow):
         self.batch_button = QPushButton('Exportar lote marcado…')
         self.batch_button.clicked.connect(self.batch_dialog)
         sl.addWidget(self.batch_button)
-        hint = QLabel('Doble clic para abrir una toma.\nMarca casillas para el lote.\n\nLos originales no se modifican.')
+        hint = QLabel('Doble clic para abrir una toma.\nEl lote usa las casillas visibles.\n\nLos originales no se modifican.')
         hint.setStyleSheet('color:#8fa0b5;font-size:12px')
         sl.addWidget(hint)
         split.addWidget(side)
@@ -274,9 +303,12 @@ class Window(QMainWindow):
         self.templates_button.clicked.connect(self.templates_dialog)
         self.problems_button = QPushButton('Resumen de problemas…')
         self.problems_button.clicked.connect(self.problems_dialog)
+        self.locate_button = QPushButton('Localizar WAV…')
+        self.locate_button.clicked.connect(self.locate_dialog)
         for button in (self.prepare_button, self.templates_button, self.problems_button):
             preparation.addWidget(button)
         preparation.addStretch()
+        preparation.addWidget(self.locate_button)
         ml.addLayout(preparation)
         self.notice = QLabel('Compatible con las tomas completas H8 v001 analizadas. Las ediciones MUSIC requieren validación adicional.')
         self.notice.setWordWrap(True)
@@ -294,6 +326,10 @@ class Window(QMainWindow):
         self.time_label.setFont(QFontDatabase.systemFont(QFontDatabase.FixedFont))
         self.time_label.setStyleSheet('font-size:14px;color:#fff0c2')
         toolbar.addWidget(self.time_label)
+        self.loop_button = QCheckBox('Repetir tramo')
+        self.loop_button.setToolTip('Repite el tramo de Favorita, notas y tramo; no cambia la exportación.')
+        self.loop_button.toggled.connect(lambda value: setattr(self.player, 'loop', value))
+        toolbar.addWidget(self.loop_button)
         toolbar.addStretch()
         toolbar.addWidget(QLabel('Zoom'))
         self.zoom = QComboBox()
@@ -321,6 +357,10 @@ class Window(QMainWindow):
         self.meter = QLabel('−∞ dBFS')
         self.meter.setMinimumWidth(105)
         bottom.addWidget(self.meter)
+        self.center_mono = QCheckBox('Mono centrado')
+        self.center_mono.setToolTip('Escuchar los canales mono L/R por ambos altavoces. Solo monitoreo.')
+        self.center_mono.toggled.connect(lambda value: setattr(self.player, 'center_mono', value))
+        bottom.addWidget(self.center_mono)
         bottom.addStretch()
         self.rpp = QCheckBox('Crear .rpp')
         self.rpp.setChecked(True)
@@ -333,7 +373,15 @@ class Window(QMainWindow):
         self.export_button.clicked.connect(self.export_dialog)
         bottom.addWidget(self.export_button)
         ml.addLayout(bottom)
-        footer = QLabel('Stems originales: sin volumen, mute ni solo · mismo inicio y duración · canales según la elección')
+        export_row = QHBoxLayout()
+        self.options_button = QPushButton('Exportación y presets…')
+        self.options_button.clicked.connect(self.options_dialog)
+        export_row.addWidget(self.options_button)
+        self.options_summary = QLabel('')
+        self.options_summary.setWordWrap(True)
+        export_row.addWidget(self.options_summary, 1)
+        ml.addLayout(export_row)
+        footer = QLabel('Medidores: picos de entrada en dBFS · stems sin ajustes de escucha · mismo inicio y duración')
         footer.setWordWrap(True)
         footer.setStyleSheet('color:#8fa0b5;font-size:11px')
         ml.addWidget(footer)
@@ -359,6 +407,7 @@ class Window(QMainWindow):
         QShortcut(QKeySequence(QKeySequence.StandardKey.Open), self, activated=self.open_dialog)
         QShortcut(QKeySequence('Home'), self, activated=self.stop)
         self.set_busy(False)
+        self.restore_controls()
         if initial:
             p = Path(initial)
             if p.is_dir() and p.suffix.lower() != '.zprj':
@@ -366,6 +415,12 @@ class Window(QMainWindow):
             else:
                 self.scan(p.parent)
                 QTimer.singleShot(100, lambda: self.load(p))
+        elif isinstance(self.session.get('library'), str) and Path(self.session['library']).is_dir():
+            self.scan(self.session['library'])
+            last = self.session.get('project')
+            if isinstance(last, str) and Path(last).is_file():
+                self.restore_position = (str(Path(last).resolve()), self.session.get('position', 0))
+                QTimer.singleShot(100, lambda: self.load(last, use_saved_channels=True))
         else:
             base = Path(sys.executable).parent if getattr(sys, 'frozen', False) else Path(__file__).resolve().parent.parent
             candidates = [base/'Projects', base.parent/'Projects', base.parent.parent/'Projects']
@@ -373,8 +428,13 @@ class Window(QMainWindow):
                 if p.is_dir():
                     self.scan(p)
                     break
+        if self.preferences.error:
+            self.status.setText(self.preferences.error)
 
     def set_busy(self, busy):
+        self.locate_button.setEnabled(not busy and self.project is not None and bool(missing_sources(self.project)))
+        self.options_button.setEnabled(not busy)
+        self.loop_button.setEnabled(not busy and self.project is not None and self.project.export_range is not None)
         for w in (self.prepare_button, self.templates_button, self.problems_button):
             w.setEnabled(not busy and self.project is not None)
         self.batch_button.setEnabled(not busy)
@@ -382,7 +442,7 @@ class Window(QMainWindow):
         self.channel_mode.setEnabled(not busy)
         self.timeline.setEnabled(not busy)
         self.rename_button.setEnabled(not busy and self.project is not None)
-        for w in (self.open_button, self.folder_button, self.library):
+        for w in (self.open_button, self.folder_button, self.library, self.search, self.library_filter):
             w.setEnabled(not busy)
         self.export_button.setEnabled(not busy and self.project is not None and
                                       not any(c.missing for t in self.project.tracks for c in t.clips))
@@ -390,32 +450,118 @@ class Window(QMainWindow):
                                     any(not c.missing for t in self.project.tracks for c in t.clips))
         self.stop_button.setEnabled(not busy and self.project is not None)
 
+    def current_export_options(self):
+        return dict(format=('WAV', 'FLAC')[self.format.currentIndex()],
+                    channels=self.channel_mode.currentIndex(), rpp=self.rpp.isChecked(),
+                    portable=self.portable_delivery, naming=self.export_naming)
+
+    def apply_export_options(self, options):
+        options = export_options(options)
+        self.format.setCurrentIndex(0 if options['format'] == 'WAV' else 1)
+        self.channel_mode.setCurrentIndex(options['channels'])
+        self.rpp.setChecked(options['rpp'])
+        self.portable_delivery, self.export_naming = options['portable'], options['naming']
+        self.options_summary.setText('Entrega portátil: .rpp, notas y checksums incluidos' if options['portable']
+                                     else 'Stems · nombres '+('por instrumento' if options['naming'] == 'track' else 'con prefijo de proyecto'))
+
+    def options_dialog(self):
+        if self.job:
+            return
+        dialog = ExportOptionsDialog(self.preferences, self.current_export_options(), self)
+        if dialog.exec():
+            self.apply_export_options(dialog.options())
+
+    def restore_controls(self):
+        try:
+            self.apply_export_options(self.preferences.data.get('export', {}))
+        except ProjectError:
+            self.apply_export_options({})
+        for key, widget, minimum, maximum in [('zoom', self.zoom, 0, 3), ('filter', self.library_filter, 0, 2)]:
+            value = self.session.get(key, 0)
+            widget.setCurrentIndex(value if type(value) is int and minimum <= value <= maximum else 0)
+        query = self.session.get('search', '')
+        self.search.setText(query if isinstance(query, str) else '')
+        self.center_mono.setChecked(self.session.get('center_mono') is True)
+        master = self.session.get('master', -60)
+        self.master.setValue(master if type(master) is int and -600 <= master <= 0 else -60)
+
+    def save_session(self):
+        self.preferences.data['session'] = dict(
+            library=str(self.library_root or (self.project.path.parent if self.project else '')),
+            project=str(self.project.path) if self.project else '', position=self.player.position,
+            zoom=self.zoom.currentIndex(), search=self.search.text(), filter=self.library_filter.currentIndex(),
+            center_mono=self.center_mono.isChecked(), master=self.master.value())
+        self.preferences.data['export'] = self.current_export_options()
+        try:
+            self.preferences.save()
+        except OSError as exc:
+            QMessageBox.warning(self, 'Preferencias', f'No se pudo guardar la sesión: {exc}')
+
+    def locate_dialog(self):
+        if not self.project or self.job:
+            return
+        folder = QFileDialog.getExistingDirectory(self, 'Buscar WAV en esta carpeta y subcarpetas', str(self.library_root or self.project.path.parent))
+        if not folder:
+            return
+        self.player.pause()
+        project, position = self.project, self.player.position
+        def found(candidates):
+            dialog = LocateDialog(candidates, self)
+            if not dialog.exec() or not dialog.selections():
+                return
+            selections = dialog.selections()
+            def work(job):
+                reopened = link_media(project, selections)
+                return reopened, self.project_peaks(reopened)
+            def loaded(result):
+                self.loaded(result)
+                self.player.position = min(position, self.project.length)
+                self.status.setText('WAV asociados y guardados. Los archivos originales no se modificaron.')
+            action = lambda: self.start_job(work, loaded)
+            if self.job:
+                self.after_job = action
+            else:
+                action()
+        self.status.setText('Buscando WAV compatibles…')
+        self.start_job(lambda job: find_candidates(project, folder, job.cancel), found, exporting=True)
+
     def scan(self, folder):
         self.library_root = Path(folder)
         self.library.clear()
         for p in project_files(self.library_root, recursive=True):
-            try:
-                settings = title_settings(p)
-                label = ('★ ' if settings.get('favorite') else '') + settings.get('title', p.stem)
-            except ProjectError:
-                label = p.stem
+            entry = library_entry(p)
+            label = ('★ ' if entry['favorite'] else '') + entry['name']
             item = QListWidgetItem(label)
             item.setData(Qt.UserRole, str(p))
+            item.setData(Qt.UserRole+1, entry)
             item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
             item.setCheckState(Qt.Unchecked)
-            item.setToolTip(f'{label}\n{p}')
+            item.setToolTip(f'{label}\n{entry["notes"]}\n{entry["detail"]}\n{p}')
             self.library.addItem(item)
-        self.library_label.setText(f'PROYECTOS  /  {self.library.count():02d}')
+        self.filter_library()
+
+    def filter_library(self, *_):
+        if not hasattr(self, 'library'):
+            return
+        visible = 0
+        for i in range(self.library.count()):
+            item = self.library.item(i)
+            shown = matches_entry(item.data(Qt.UserRole+1), self.search.text(), self.library_filter.currentIndex())
+            item.setHidden(not shown)
+            visible += int(shown)
+        self.library_label.setText(f'PROYECTOS  /  {visible} de {self.library.count()}')
 
     def checked_paths(self):
         return [self.library.item(i).data(Qt.UserRole) for i in range(self.library.count())
-                if self.library.item(i).checkState() == Qt.Checked]
+                if not self.library.item(i).isHidden() and self.library.item(i).checkState() == Qt.Checked]
 
     def check_projects(self, mode):
         if self.job:
             return
         for i in range(self.library.count()):
             item = self.library.item(i)
+            if item.isHidden() and mode != 'none':
+                continue
             selected = mode == 'all'
             if mode == 'favorites':
                 try:
@@ -431,12 +577,18 @@ class Window(QMainWindow):
             if Path(item.data(Qt.UserRole)).resolve() == p.path:
                 item.setText(('★ ' if p.favorite else '') + p.name)
                 item.setToolTip(f'{p.name}\n{p.notes}\n{p.path}')
+                item.setData(Qt.UserRole+1, library_entry(p.path))
         a, b = p.export_range or (0, p.length)
         self.subtitle.setText(f'{len(p.tracks)} pistas · {p.rate/1000:g} kHz · Exportar {clock_text(a/p.rate)} → {clock_text(b/p.rate)}')
         self.timeline.update()
+        self.filter_library()
+        self.loop_button.setEnabled(not self.job and p.export_range is not None)
+        if p.export_range is None:
+            self.loop_button.setChecked(False)
 
     def prepare_dialog(self):
         if self.project and not self.job:
+            self.player.pause()
             if PreparationDialog(self.project, self.player.position, self).exec():
                 self.refresh_preparation()
 
@@ -487,8 +639,9 @@ class Window(QMainWindow):
         self.player.pause()
         fmt, rpp = ('WAV' if self.format.currentIndex() == 0 else 'FLAC'), self.rpp.isChecked()
         split_stereo = self.selected_channel_mode()
+        portable, naming = self.portable_delivery, self.export_naming
         self.status.setText(f'Exportando {len(paths)} proyectos con sus tramos guardados…')
-        self.start_job(lambda job: export_batch(paths, Path(folder), fmt, rpp, job.progress.emit, job.cancel, split_stereo=split_stereo), self.batch_finished, exporting=True)
+        self.start_job(lambda job: export_batch(paths, Path(folder), fmt, rpp, job.progress.emit, job.cancel, split_stereo=split_stereo, portable=portable, naming=naming), self.batch_finished, exporting=True)
 
     def selected_channel_mode(self):
         return (None, False, True)[self.channel_mode.currentIndex()]
@@ -593,17 +746,20 @@ class Window(QMainWindow):
         self.progress.hide()
         self.cancel_button.hide()
         self.set_busy(False)
+        if self.after_job:
+            action, self.after_job = self.after_job, None
+            QTimer.singleShot(0, action)
 
     def job_error(self, error):
         self.status.setText(error)
         QMessageBox.warning(self, 'H8 Studio', error)
 
-    def load(self, path):
+    def load(self, path, use_saved_channels=False):
         if self.job:
             return
         self.player.pause()
         self.status.setText('Leyendo proyecto y formas de onda…')
-        mode = self.selected_channel_mode()
+        mode = None if use_saved_channels else self.selected_channel_mode()
         def work(job):
             project = read_project(path)
             if mode is not None:
@@ -621,6 +777,10 @@ class Window(QMainWindow):
             self.job_error(str(exc))
             return
         self.project = project
+        if self.restore_position and self.restore_position[0] == str(project.path):
+            position = self.restore_position[1]
+            self.player.position = max(0, min(position, project.length)) if type(position) is int else 0
+            self.restore_position = None
         self.title.setText(project.name)
         self.subtitle.setText(f'{len(project.tracks)} pistas  ·  {project.rate/1000:g} kHz  ·  {clock_text(project.length/project.rate)}  ·  {project.alignment}')
         self.notice.setText('\n'.join(project.warnings))
@@ -648,6 +808,7 @@ class Window(QMainWindow):
                 item.setText(('★ ' if self.project.favorite else '') + self.project.name)
                 item.setToolTip(f'{self.project.name}\n{self.project.path}')
         self.status.setText('Título guardado. Se usará también al exportar los stems.')
+        self.refresh_preparation()
 
     def rename_track_dialog(self, index):
         if not self.project or self.job:
@@ -663,6 +824,7 @@ class Window(QMainWindow):
             self.job_error(f'No se guardó el nombre: {exc}')
             return
         self.timeline.update()
+        self.refresh_preparation()
         self.status.setText(f'Pista guardada: {track.name}. Los stems usarán esta etiqueta.')
 
     def resize_timeline(self, *_):
@@ -700,6 +862,7 @@ class Window(QMainWindow):
         if self.project:
             self.time_label.setText(f'{clock_text(self.player.position/self.project.rate)} / {clock_text(self.project.length/self.project.rate)}')
             self.timeline.position = self.player.position
+            self.timeline.meter_values = [t.peak if self.player.playing else 0 for t in self.project.tracks]
             self.timeline.update()
         peak = self.player.peak if self.player.playing else 0
         self.meter.setText('CLIP' if peak >= 1 else f'{20*math.log10(peak):.1f} dBFS' if peak > 0 else '−∞ dBFS')
@@ -718,8 +881,9 @@ class Window(QMainWindow):
         self.player.pause()
         fmt = 'WAV' if self.format.currentIndex() == 0 else 'FLAC'
         create_rpp = self.rpp.isChecked()
+        portable, naming = self.portable_delivery, self.export_naming
         self.status.setText(f'Exportando stems {fmt} a 24 bits…')
-        self.start_job(lambda job: export_stems(self.project, Path(folder), fmt, job.progress.emit, job.cancel, create_rpp=create_rpp),
+        self.start_job(lambda job: export_stems(self.project, Path(folder), fmt, job.progress.emit, job.cancel, create_rpp=create_rpp, portable=portable, naming=naming),
                        self.exported, exporting=True)
 
     def exported(self, folder):
@@ -744,6 +908,7 @@ class Window(QMainWindow):
             self.status.setText('Espera a que termine la lectura o cancela la exportación antes de cerrar.')
             event.ignore()
             return
+        self.save_session()
         self.player.close()
         event.accept()
 

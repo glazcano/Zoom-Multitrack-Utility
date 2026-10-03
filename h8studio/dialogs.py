@@ -4,6 +4,7 @@ from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel, QCheck
     QComboBox, QTableWidget, QTableWidgetItem, QHeaderView)
 from .core import save_preparation, validate_title, ProjectError
 from .workflows import read_templates, atomic_json, apply_template
+from .preferences import export_options
 
 
 class PreparationDialog(QDialog):
@@ -183,3 +184,113 @@ def show_report(parent, title, text):
     close.clicked.connect(dialog.accept)
     layout.addWidget(close)
     dialog.exec()
+
+
+class LocateDialog(QDialog):
+    def __init__(self, candidates, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle('Asociar WAV encontrados')
+        self.resize(850, 400)
+        layout = QVBoxLayout(self)
+        hint = QLabel('Coinciden nombre, duración, canales y frecuencia. Comprueba la carpeta y fecha: '
+                      'pueden pertenecer a otra toma. Elige cada archivo; no se mueve ni se copia audio.')
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+        table = QTableWidget(len(candidates), 2)
+        table.setHorizontalHeaderLabels(['WAV faltante', 'Archivo encontrado · fecha/referencia BWF'])
+        table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
+        self.choices = {}
+        for row, (name, matches) in enumerate(candidates.items()):
+            table.setItem(row, 0, QTableWidgetItem(name))
+            choice = QComboBox()
+            choice.addItem('Sin asociar' if matches else 'Sin coincidencias compatibles', None)
+            for match in matches:
+                choice.addItem(match['path']+' · '+match['bwf'], match['path'])
+            self.choices[name] = choice
+            table.setCellWidget(row, 1, choice)
+        layout.addWidget(table)
+        buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def selections(self):
+        return {name: choice.currentData() for name, choice in self.choices.items() if choice.currentData()}
+
+
+class ExportOptionsDialog(QDialog):
+    def __init__(self, preferences, current, parent=None):
+        super().__init__(parent)
+        self.preferences = preferences
+        self.setWindowTitle('Exportación y presets')
+        self.resize(530, 420)
+        layout = QVBoxLayout(self)
+        self.names = QComboBox()
+        self.names.setEditable(True)
+        self.names.addItems(sorted(preferences.presets()))
+        self.names.setEditText('')
+        self.names.setPlaceholderText('Nombre del preset')
+        layout.addWidget(self.names)
+        self.format = QComboBox()
+        self.format.addItems(['WAV', 'FLAC'])
+        layout.addWidget(self.format)
+        self.channels = QComboBox()
+        self.channels.addItems(['Canales guardados', 'Una pista estéreo', 'Dos pistas mono (L/R)'])
+        layout.addWidget(self.channels)
+        self.naming = QComboBox()
+        self.naming.addItems(['01_Instrumento.wav', 'Proyecto_01_Instrumento.wav'])
+        layout.addWidget(self.naming)
+        self.rpp = QCheckBox('Crear proyecto REAPER (.rpp)')
+        self.portable = QCheckBox('Carpeta de entrega: stems + .rpp + notas + checksums')
+        self.portable.setToolTip('Incluye siempre .rpp y archivos con rutas relativas, lista para compartir.')
+        layout.addWidget(self.rpp)
+        layout.addWidget(self.portable)
+        hint = QLabel('Los canales se aplican al abrir y exportar lotes. En una exportación individual '
+                      'se usan las pistas visibles. Cada toma conserva su tramo guardado.')
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+        row = QHBoxLayout()
+        for label, action in [('Guardar preset', self.save_preset), ('Eliminar preset', self.delete_preset)]:
+            button = QPushButton(label)
+            button.clicked.connect(action)
+            row.addWidget(button)
+        layout.addLayout(row)
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+        self.names.activated.connect(lambda _: self.populate(preferences.presets()[self.names.currentText()]))
+        self.populate(current)
+
+    def populate(self, options):
+        options = export_options(options)
+        self.format.setCurrentText(options['format'])
+        self.channels.setCurrentIndex(options['channels'])
+        self.naming.setCurrentIndex(0 if options['naming'] == 'track' else 1)
+        self.rpp.setChecked(options['rpp'])
+        self.portable.setChecked(options['portable'])
+
+    def options(self):
+        return dict(format=self.format.currentText(), channels=self.channels.currentIndex(),
+                    rpp=self.rpp.isChecked(), portable=self.portable.isChecked(),
+                    naming=('track', 'project_track')[self.naming.currentIndex()])
+
+    def save_preset(self):
+        try:
+            name = validate_title(self.names.currentText())
+            self.preferences.put_preset(name, self.options())
+            if self.names.findText(name) < 0:
+                self.names.addItem(name)
+            self.names.setCurrentText(name)
+        except (ProjectError, OSError) as exc:
+            QMessageBox.warning(self, 'Preset', str(exc))
+
+    def delete_preset(self):
+        try:
+            name = self.names.currentText()
+            self.preferences.delete_preset(name)
+            index = self.names.findText(name)
+            if index >= 0:
+                self.names.removeItem(index)
+        except OSError as exc:
+            QMessageBox.warning(self, 'Preset', str(exc))

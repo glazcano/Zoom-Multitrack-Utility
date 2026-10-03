@@ -17,7 +17,7 @@ def verify(project_path, report_path, audio=True):
         app.setStyle('Fusion')
         app.setStyleSheet(STYLE)
         project = read_project(project_path)
-        window = Window()
+        window = Window(state_path=False)
         window.loaded((project, window.project_peaks(project)))
         window.set_busy(False)
         window.resize(1320, 800)

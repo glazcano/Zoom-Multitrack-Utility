@@ -24,7 +24,7 @@ def source_archive():
              'build.ps1', 'build.sh', 'Abrir H8 Studio.cmd', 'README.md', '.gitignore']]
     for directory in ('h8studio', 'tools', 'tests', 'packaging', '.github'):
         files += [p for p in (ROOT/directory).rglob('*') if p.is_file() and '__pycache__' not in p.parts]
-    files += [ROOT/'docs/platforms.md', ROOT/'docs/formato-h8.md']
+    files += [ROOT/'docs/platforms.md', ROOT/'docs/formato-h8.md', ROOT/'docs/release-notes.md']
     with zipfile.ZipFile(output, 'w', zipfile.ZIP_DEFLATED) as archive:
         for path in files:
             archive.write(path, 'H8Studio/'+path.relative_to(ROOT).as_posix())

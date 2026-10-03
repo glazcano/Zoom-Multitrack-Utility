@@ -21,6 +21,10 @@ The interface currently uses Spanish labels.
 - **Export range:** choose one section for every track; exports start at zero and have matching lengths.
 - **Batch processing:** check projects in the library and export them together. A report lists completed, failed, and pending takes.
 - **Problem summary:** check for missing audio, silence, very low levels, and possible clipping.
+- **Find missing WAVs:** use **Localizar WAV…** to search a folder and its subfolders. Choose each match explicitly; matching checks name, duration, sample rate, and channels. Associations are saved without moving audio.
+- **Search and filters:** find projects by name, notes, or folder; show favorites or missing/unreadable projects. Batch actions use checked, visible projects.
+- **Listening tools:** per-track input peak meters remain active on muted tracks. **Mono centrado** places split mono channels in both speakers; **Repetir tramo** loops the saved export range. Both affect monitoring only.
+- **Resume your session:** the last library, project, cursor, zoom, search, listening level, and export options return on the next launch, with playback paused.
 
 ### Stereo or two mono tracks
 
@@ -38,11 +42,19 @@ Choose a mode before opening projects, or select projects and click **Aplicar ca
 
 Split channels produce separate mono stems and REAPER tracks, panned left/right in the `.rpp`. Templates can label them individually with `Mic12.L` and `Mic12.R`; use `Mic12` for the stereo track.
 
+### Export presets and portable delivery
+
+Open **Exportación y presets…** to save, edit, apply, or delete presets for WAV/FLAC, channel layout, filename style, `.rpp`, and portable delivery. Channel choices apply to opening projects and batch export; individual export follows the visible tracks.
+
+Enable **Carpeta de entrega** for a self-contained folder with stems, `Proyecto.rpp`, `Notes.txt`, instructions, export details, and SHA-256 checksums. Move or share the whole folder; REAPER uses relative media paths. This option always includes `.rpp`.
+
 ## Your recordings stay intact
 
 Exports are dry **24-bit WAV or FLAC**, at the project's sample rate, with matching lengths and silence where needed. Listening gain, mute, and solo do not affect exported audio. Large WAVs use RF64.
 
 Original audio and H8 project files are never rewritten. Names, notes, ranges, and channel choices live in a companion `.h8studio.json`; copy it with the project to keep your settings. Templates live in `.h8studio-templates.json` in the library folder. Each export gets a new folder and an `export.json` report.
+
+Export presets and the last session are stored in the application's configuration folder. Linked WAVs outside the project remain external dependencies until you export a portable delivery.
 
 ## Compatibility
 
@@ -70,6 +82,8 @@ python tools/verify_ui.py
 python tools/build_native.py
 ```
 
-Build on the target operating system, or run **Actions → Native desktop packages → Run workflow** on GitHub and download its artifacts. Fedora requires the system packages listed in the platform guide.
+Build on the target operating system, or run **Actions → Native desktop packages → Run workflow** on GitHub. Once all four builds pass, it creates a **draft release** for the app version, with native packages and checksums attached. Open **Releases**, review the draft, and click **Publish release** when ready. Fedora requires the system packages listed in the platform guide.
+
+Increase `h8studio.__version__` and update `docs/release-notes.md` for a new release. Reruns may update the same draft only for the same commit; published releases are never overwritten.
 
 Built with PySide6, NumPy, SoundFile, and sounddevice.

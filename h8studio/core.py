@@ -106,6 +106,7 @@ class Track:
     gain: float = 1.0
     mute: bool = False
     solo: bool = False
+    peak: float = 0.0
 
     @property
     def output_channel(self):
@@ -196,7 +197,7 @@ def bwf_reference(path: Path):
     return None
 
 
-def read_project(path: str | Path) -> Project:
+def read_project(path: str | Path, audio_links=None) -> Project:
     path = Path(path).resolve()
     if path.is_dir():
         choices = project_files(path)
@@ -204,6 +205,9 @@ def read_project(path: str | Path) -> Project:
             raise ProjectError('La carpeta debe contener exactamente un archivo .h8prj.')
         path = choices[0]
     b = path.read_bytes()
+    links = title_settings(path).get('audio_links', {}) if audio_links is None else audio_links
+    if not isinstance(links, dict) or any(not isinstance(k, str) or not isinstance(v, str) for k, v in links.items()):
+        raise ProjectError('Referencias de WAV guardadas inválidas.')
     if len(b) != 10312 or b[:32] != b'ZOOM H8 ProjectFile v001        ':
         raise ProjectError('Versión o estructura H8 no reconocida. No se adivinarán las posiciones.')
     name = b[32:552].decode('utf-16le').split('\0')[0]
@@ -223,6 +227,11 @@ def read_project(path: str | Path) -> Project:
         if '/' in filename or '\\' in filename or ':' in filename or not filename.lower().endswith('.wav'):
             raise ProjectError('Referencia de audio no reconocida en el proyecto.')
         audio = lookup.get(filename.casefold(), path.parent / filename)
+        if not audio.exists() and filename.casefold() in links:
+            linked = Path(links[filename.casefold()])
+            linked = linked if linked.is_absolute() else path.parent/linked
+            if linked.is_file():
+                audio = linked.resolve()
         missing = not audio.exists()
         channels = 2 if re.search(r'(12|34|LR)', filename, re.I) else 1
         n = frames
@@ -348,15 +357,17 @@ class Renderer:
             out[lo-start:hi-start] += data
         return out
 
-    def mix(self, start: int, count: int, master: float = 1.0):
+    def mix(self, start: int, count: int, master: float = 1.0, center_mono=False):
         out = np.zeros((count, 2), dtype=np.float64)
         solo = any(t.solo for t in self.project.tracks)
         for t in self.project.tracks:
+            block = self.track_block(t, start, count)
+            t.peak = float(np.abs(block).max(initial=0))
             if t.mute or (solo and not t.solo):
                 continue
-            block = self.track_block(t, start, count)*t.gain
+            block *= t.gain
             if t.channels == 1:
-                if t.output_channel is None:
+                if t.output_channel is None or center_mono:
                     block = np.repeat(block, 2, axis=1)
                 else:
                     routed = np.zeros((count, 2), dtype=np.float64)
@@ -370,10 +381,12 @@ class ExportCancelled(Exception):
     pass
 
 
-def export_stems(project: Project, parent: Path, fmt='WAV', progress=None, cancel=None, create_rpp=False):
+def export_stems(project: Project, parent: Path, fmt='WAV', progress=None, cancel=None, create_rpp=False, portable=False, naming='track'):
     """Export dry 24-bit stems atomically into a NEW directory. No source writes."""
     if fmt not in ('WAV', 'FLAC'):
         raise ValueError('Formato no compatible')
+    if naming not in ('track', 'project_track'):
+        raise ValueError('Nombre de archivo no compatible')
     if any(c.missing for t in project.tracks for c in t.clips):
         raise ProjectError('Faltan WAV. Localiza los archivos antes de exportar.')
     start, end = project.export_range or (0, project.length)
@@ -396,6 +409,8 @@ def export_stems(project: Project, parent: Path, fmt='WAV', progress=None, cance
         for i, t in enumerate(project.tracks):
             label = re.sub(r'[^\w\-]+', '_', t.name)[:80] or 'Pista'
             filename = f'{i+1:02d}_{label}.{fmt.lower()}'
+            if naming == 'project_track':
+                filename = safe + '_' + filename
             container = 'RF64' if fmt == 'WAV' and length*t.channels*3+4096 >= 2**32 else fmt
             with sf.SoundFile(str(staging/filename), 'w', samplerate=project.rate,
                               channels=t.channels, subtype='PCM_24', format=container) as f:
@@ -411,7 +426,7 @@ def export_stems(project: Project, parent: Path, fmt='WAV', progress=None, cance
                     if progress:
                         progress(round(done/max(1,total)*100))
             files.append(filename)
-        manifest = {'project': project.name, 'source': str(project.path), 'sample_rate': project.rate,
+        manifest = {'project': project.name, 'source': project.path.name if portable else str(project.path), 'sample_rate': project.rate,
                     'frames': length, 'source_range_samples': [start, end],
                     'favorite': project.favorite, 'notes': project.notes,
                     'format': fmt, 'bits': 24, 'alignment': project.alignment,
@@ -422,9 +437,27 @@ def export_stems(project: Project, parent: Path, fmt='WAV', progress=None, cance
                                'source_channel': None if t.output_channel is None else ('L', 'R')[t.output_channel]}
                               for t, filename in zip(project.tracks, files)]
         (staging/'export.json').write_text(json.dumps(manifest, indent=2, ensure_ascii=False), encoding='utf-8')
-        if create_rpp:
+        if create_rpp or portable:
             from .reaper import write_rpp
             write_rpp(staging/'Proyecto.rpp', project, files, length, fmt)
+        if portable:
+            (staging/'Notes.txt').write_text(project.name+'\n\n'+project.notes+'\n', encoding='utf-8')
+            (staging/'README.txt').write_text(
+                'H8 Studio — portable delivery\n\nOpen Proyecto.rpp in REAPER. Keep all files together.\n'
+                'Alternatively, import the audio files on separate tracks at 00:00.\n'
+                'Stems are dry 24-bit audio; monitor gain, mute, solo and centering were not applied.\n'
+                'The export range starts at zero. Notes are in Notes.txt; details are in export.json.\n', encoding='utf-8')
+            import hashlib
+            checksums = []
+            for asset in sorted(staging.iterdir()):
+                digest = hashlib.sha256()
+                with asset.open('rb') as stream:
+                    for chunk in iter(lambda: stream.read(1024*1024), b''):
+                        if cancel and cancel.is_set():
+                            raise ExportCancelled()
+                        digest.update(chunk)
+                checksums.append(f'{digest.hexdigest()}  {asset.name}')
+            (staging/'SHA256SUMS.txt').write_text('\n'.join(checksums)+'\n', encoding='utf-8')
         if cancel and cancel.is_set():
             raise ExportCancelled()
         staging.rename(target)
