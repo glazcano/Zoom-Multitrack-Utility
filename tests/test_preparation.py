@@ -5,12 +5,13 @@ import shutil
 import tempfile
 import threading
 import unittest
+from unittest.mock import patch
 import numpy as np
 import soundfile as sf
 import sounddevice as sd
 
 from h8studio.audio import Player
-from h8studio.core import read_project, set_stereo_split, Renderer, export_stems, save_preparation, ProjectError, ExportCancelled
+from h8studio.core import read_project, set_stereo_split, Renderer, export_stems, save_preparation, save_loop_range, ProjectError, ExportCancelled
 from h8studio.preferences import Preferences, library_entry, matches_entry
 from h8studio.relink import find_candidates, link_media
 from tools.synthetic_project import make_project
@@ -54,7 +55,7 @@ class PreparationTests(unittest.TestCase):
         try:
             player.master = 1
             player.loop = True
-            self.project.export_range = (15, 22)
+            self.project.loop_range = (15, 22)
             player.position = 20
             expected = player.renderer.mix(15, 7)
             output = np.zeros((23, 2), dtype=np.float32)
@@ -65,7 +66,8 @@ class PreparationTests(unittest.TestCase):
             player.position = 500
             player.callback(output, 23, None, False)
             np.testing.assert_allclose(output, expected[np.arange(23)%7], atol=1e-7)
-            self.project.export_range = None
+            self.project.loop_range = None
+            player.loop = False
             player.position = self.project.length
             with self.assertRaises(sd.CallbackStop):
                 player.callback(output, 23, None, False)
@@ -103,6 +105,57 @@ class PreparationTests(unittest.TestCase):
         cancelled.set()
         with self.assertRaises(ExportCancelled):
             find_candidates(read_project(self.path), recovery, cancelled)
+
+    def test_loop_range_persists_independently_and_rejects_invalid_range(self):
+        save_preparation(self.project, False, '', (10, 100))
+        save_loop_range(self.project, (15, 22))
+        reopened = read_project(self.path)
+        self.assertEqual(reopened.loop_range, (15, 22))
+        self.assertEqual(reopened.export_range, (10, 100))
+        with self.assertRaises(ProjectError):
+            save_loop_range(self.project, (22, 22))
+        self.assertEqual(read_project(self.path).loop_range, (15, 22))
+        save_loop_range(self.project, None)
+        self.assertIsNone(read_project(self.path).loop_range)
+        self.assertEqual(read_project(self.path).export_range, (10, 100))
+
+    def test_full_take_loop_ignores_export_range_and_short_loop_reads_once(self):
+        player = Player()
+        player.load(self.project)
+        try:
+            player.master = 1
+            player.loop = True
+            self.project.export_range = (100, 200)
+            player.position = self.project.length-7
+            expected = np.concatenate((player.renderer.mix(player.position, 7), player.renderer.mix(0, 16)))
+            output = np.zeros((23, 2), dtype=np.float32)
+            player.callback(output, 23, None, False)
+            np.testing.assert_allclose(output, np.clip(expected, -1, 1), atol=1e-7)
+            self.assertEqual(player.position, 16)
+            self.project.loop_range = (15, 16)
+            with patch.object(player.renderer, 'mix', wraps=player.renderer.mix) as mix:
+                player.callback(output, 23, None, False)
+                self.assertEqual(mix.call_count, 1)
+            np.testing.assert_array_equal(output, np.repeat(output[:1], 23, axis=0))
+            self.project.loop_range = (16, 16)
+            with self.assertRaises(sd.CallbackAbort):
+                player.callback(output, 23, None, False)
+        finally:
+            player.close()
+
+    def test_split_channels_share_one_source_read_per_mix(self):
+        set_stereo_split(self.project, True)
+        renderer = Renderer(self.project)
+        try:
+            source = renderer.files[self.project.tracks[0].clips[0].path]
+            with patch.object(source, 'read', wraps=source.read) as read:
+                first = renderer.mix(0, 100)
+                self.assertEqual(read.call_count, 1)
+                second = renderer.mix(0, 100)
+                self.assertEqual(read.call_count, 2)
+            np.testing.assert_array_equal(first, second)
+        finally:
+            renderer.close()
 
     def test_presets_roundtrip_edit_delete_and_validation(self):
         path = self.root/'prefs.json'

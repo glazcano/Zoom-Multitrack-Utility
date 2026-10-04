@@ -13,6 +13,7 @@ def verify(project_path, report_path, audio=True):
         from PySide6.QtWidgets import QApplication
         from .core import read_project, export_stems
         from .ui import Window, STYLE
+        from .dialogs import AboutDialog
         app = QApplication([])
         app.setStyle('Fusion')
         app.setStyleSheet(STYLE)
@@ -23,6 +24,17 @@ def verify(project_path, report_path, audio=True):
         window.resize(1320, 800)
         app.processEvents()
         assert window.export_button.isEnabled()
+        about = AboutDialog(window.preferences, window)
+        assert about.windowTitle() == 'About H8 Studio'
+        about.close()
+        assert window.loop_button.isEnabled() and window.loop_range_button.isEnabled()
+        project.loop_range = (15, 22)
+        window.player.loop = True
+        window.player.callback(np.zeros((2048, 2), dtype=np.float32), 2048, None, False)
+        assert 15 <= window.player.position < 22 and not window.player.error
+        project.loop_range = None
+        window.player.loop = False
+        window.player.position = 0
         if audio:
             window.player.master = 0
             window.player.play()
@@ -47,7 +59,7 @@ def verify(project_path, report_path, audio=True):
                     assert np.array_equal(source[a:b], target)
         window.close()
         report = {'ok': True, 'project': project.name, 'checks': [
-            'packaged imports and DLLs', 'Qt window and waveform', 'WAV and FLAC lossless roundtrip',
+            'packaged imports and DLLs', 'Qt window, waveform and About dependencies', 'short loop callback', 'WAV and FLAC lossless roundtrip',
             'silent playback, pause and seek' if audio else 'audio device test SKIPPED', 'clean shutdown']}
         report_path.write_text(json.dumps(report, indent=2), encoding='utf-8')
         return 0

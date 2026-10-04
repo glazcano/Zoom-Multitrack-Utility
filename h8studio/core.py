@@ -1,5 +1,6 @@
 """H8 v001 reader and sample-accurate, bounded-memory audio rendering."""
 from __future__ import annotations
+from .i18n import tr
 
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -33,24 +34,24 @@ def title_settings(path: Path) -> dict:
     try:
         data = json.loads(sidecar.read_text(encoding='utf-8'))
         if not isinstance(data, dict):
-            raise ValueError('Se esperaba un objeto JSON')
+            raise ValueError(tr('Se esperaba un objeto JSON'))
         if 'title' in data:
             data['title'] = validate_title(data['title'])
         if 'tracks' in data:
             if not isinstance(data['tracks'], dict):
-                raise ValueError('Las etiquetas de pistas deben ser un objeto JSON')
+                raise ValueError(tr('Las etiquetas de pistas deben ser un objeto JSON'))
             data['tracks'] = {key: validate_title(value) for key, value in data['tracks'].items()}
         return data
     except (ValueError, OSError) as exc:
-        raise ProjectError(f'No se pudo leer el título guardado en {sidecar.name}: {exc}') from exc
+        raise ProjectError(tr('No se pudo leer el título guardado en {0}: {1}', sidecar.name, exc)) from exc
 
 
 def validate_title(value: str) -> str:
     if not isinstance(value, str):
-        raise ProjectError('El título debe ser texto.')
+        raise ProjectError(tr('El título debe ser texto.'))
     value = value.strip()
     if not value or len(value) > 100 or any(ord(c) < 32 for c in value):
-        raise ProjectError('Escribe un título de 1 a 100 caracteres, en una sola línea.')
+        raise ProjectError(tr('Escribe un título de 1 a 100 caracteres, en una sola línea.'))
     return value
 
 
@@ -65,7 +66,7 @@ def rename_project(project: 'Project', title: str):
 def rename_track(project: 'Project', track: 'Track', title: str):
     title = validate_title(title)
     if not any(t is track for t in project.tracks) or not track.clips:
-        raise ProjectError('La pista no pertenece al proyecto.')
+        raise ProjectError(tr('La pista no pertenece al proyecto.'))
     data = title_settings(project.path)
     data.setdefault('tracks', {})[track_key(track)] = title
     save_settings(project, data)
@@ -125,10 +126,11 @@ class Project:
     frames: int
     tracks: list[Track]
     warnings: list[str] = field(default_factory=list)
-    alignment: str = "Inicio común"
+    alignment: str = field(default_factory=lambda: tr('Inicio común'))
     favorite: bool = False
     notes: str = ''
     export_range: tuple[int, int] | None = None
+    loop_range: tuple[int, int] | None = None
     source_tracks: list[Track] = field(default_factory=list, repr=False)
     split_pairs: dict = field(default_factory=dict, repr=False)
 
@@ -202,19 +204,19 @@ def read_project(path: str | Path, audio_links=None) -> Project:
     if path.is_dir():
         choices = project_files(path)
         if len(choices) != 1:
-            raise ProjectError('La carpeta debe contener exactamente un archivo .h8prj.')
+            raise ProjectError(tr('La carpeta debe contener exactamente un archivo .h8prj.'))
         path = choices[0]
     b = path.read_bytes()
     links = title_settings(path).get('audio_links', {}) if audio_links is None else audio_links
     if not isinstance(links, dict) or any(not isinstance(k, str) or not isinstance(v, str) for k, v in links.items()):
-        raise ProjectError('Referencias de WAV guardadas inválidas.')
+        raise ProjectError(tr('Referencias de WAV guardadas inválidas.'))
     if len(b) != 10312 or b[:32] != b'ZOOM H8 ProjectFile v001        ':
-        raise ProjectError('Versión o estructura H8 no reconocida. No se adivinarán las posiciones.')
+        raise ProjectError(tr('Versión o estructura H8 no reconocida. No se adivinarán las posiciones.'))
     name = b[32:552].decode('utf-16le').split('\0')[0]
     frames = struct.unpack_from('<Q', b, 552)[0]
     rate, bits = struct.unpack_from('<II', b, 564)
     if rate not in (44100, 48000, 96000) or bits not in (16, 24) or frames > rate * 86400:
-        raise ProjectError('Cabecera H8 fuera del formato comprobado.')
+        raise ProjectError(tr('Cabecera H8 fuera del formato comprobado.'))
     # 12 fixed filename slots, each 260 UTF-16 code units. These are NOT clip offsets.
     names = [b[1496+i*520:1496+(i+1)*520].decode('utf-16le').split('\0')[0] for i in range(12)]
     lookup = {p.name.casefold(): p for p in path.parent.iterdir() if p.is_file() and not p.name.startswith('._')}
@@ -225,7 +227,7 @@ def read_project(path: str | Path, audio_links=None) -> Project:
             continue
         seen.add(filename.casefold())
         if '/' in filename or '\\' in filename or ':' in filename or not filename.lower().endswith('.wav'):
-            raise ProjectError('Referencia de audio no reconocida en el proyecto.')
+            raise ProjectError(tr('Referencia de audio no reconocida en el proyecto.'))
         audio = lookup.get(filename.casefold(), path.parent / filename)
         if not audio.exists() and filename.casefold() in links:
             linked = Path(links[filename.casefold()])
@@ -237,21 +239,21 @@ def read_project(path: str | Path, audio_links=None) -> Project:
         n = frames
         ref = None
         if missing:
-            warnings.append(f'Falta {filename}. No se permite exportar hasta localizarlo.')
+            warnings.append(tr('Falta {0}. No se permite exportar hasta localizarlo.', filename))
         else:
             try:
                 info = sf.info(str(audio))
                 if info.samplerate != rate or info.channels not in (1, 2):
-                    raise ProjectError(f'{filename}: frecuencia o canales incompatibles con el proyecto.')
+                    raise ProjectError(tr('{0}: frecuencia o canales incompatibles con el proyecto.', filename))
                 n, channels = info.frames, info.channels
                 ref = bwf_reference(audio)
             except (RuntimeError, OSError) as exc:
-                raise ProjectError(f'No se puede leer {filename}: {exc}') from exc
+                raise ProjectError(tr('No se puede leer {0}: {1}', filename, exc)) from exc
         tracks.append(Track(Path(filename).stem, [Clip(audio, 0, n, channels, missing=missing)]))
         refs.append(ref)
     if not tracks:
-        raise ProjectError('El proyecto no contiene referencias a WAV.')
-    alignment = 'Inicio común · asignaciones H8'
+        raise ProjectError(tr('El proyecto no contiene referencias a WAV.'))
+    alignment = tr('Inicio común · asignaciones H8')
     present = [(t, r) for t, r in zip(tracks, refs) if not t.clips[0].missing]
     # FIELD timestamps are wall clock. MUSIC uses project-relative/zero references;
     # do not reinterpret MUSIC recording dates as arrangement offsets.
@@ -259,21 +261,21 @@ def read_project(path: str | Path, audio_links=None) -> Project:
         try:
             stamps = [(t, dt.date.fromisoformat(r[0]).toordinal()*86400*rate+r[1]) for t, r in present]
         except ValueError as exc:
-            raise ProjectError('Fecha BWF inválida; no se puede determinar la alineación.') from exc
+            raise ProjectError(tr('Fecha BWF inválida; no se puede determinar la alineación.')) from exc
         origin = min(s for _, s in stamps)
         if max(s for _, s in stamps) - origin > rate*86400:
-            raise ProjectError('Referencias BWF separadas por más de un día; revise el proyecto.')
+            raise ProjectError(tr('Referencias BWF separadas por más de un día; revise el proyecto.'))
         for t, s in stamps:
             t.clips[0].start = s-origin
-        alignment = 'BWF · muestras relativas al primer WAV'
+        alignment = tr('BWF · muestras relativas al primer WAV')
     elif any(t.clips[0].frames != frames for t, _ in present):
-        raise ProjectError('Este proyecto tiene tomas de distinta duración sin alineación FIELD verificable. Se necesita analizar su disposición MUSIC antes de importarlo.')
+        raise ProjectError(tr('Este proyecto tiene tomas de distinta duración sin alineación FIELD verificable. Se necesita analizar su disposición MUSIC antes de importarlo.'))
     if any(t.clips[0].start or t.clips[0].frames != frames for t, _ in present):
-        warnings.append('Se usaron tiempos BWF de grabación; no representan necesariamente ediciones hechas en la grabadora.')
+        warnings.append(tr('Se usaron tiempos BWF de grabación; no representan necesariamente ediciones hechas en la grabadora.'))
     extras = [p.name for p in lookup.values() if p.suffix.lower() == '.wav' and p.name.casefold() not in seen]
     if extras:
-        warnings.append('WAV sin asignación, no importados: ' + ', '.join(extras))
-    warnings.append('Lectura v001 validada con tomas completas. Ediciones, overdubs y regiones MUSIC aún no verificados.')
+        warnings.append(tr('WAV sin asignación, no importados: ') + ', '.join(extras))
+    warnings.append(tr('Lectura v001 validada con tomas completas. Ediciones, overdubs y regiones MUSIC aún no verificados.'))
     # Apply the display title only AFTER interpreting the recorder's original name.
     # A custom title must never change FIELD/MUSIC alignment behavior.
     try:
@@ -288,37 +290,52 @@ def read_project(path: str | Path, audio_links=None) -> Project:
         settings = title_settings(path)
         favorite, notes = settings.get('favorite', False), settings.get('notes', '')
         if not isinstance(favorite, bool) or not isinstance(notes, str) or len(notes) > 10000:
-            raise ProjectError('Favorito o notas guardadas inválidas.')
+            raise ProjectError(tr('Favorito o notas guardadas inválidas.'))
         region = settings.get('export_range')
         if region is not None:
             if not isinstance(region, list) or len(region) != 2:
-                raise ProjectError('Tramo guardado inválido.')
+                raise ProjectError(tr('Tramo guardado inválido.'))
             validate_range(project, *region)
             project.export_range = tuple(region)
+        region = settings.get('loop_range')
+        if region is not None:
+            if not isinstance(region, list) or len(region) != 2:
+                raise ProjectError(tr('Tramo guardado inválido.'))
+            validate_range(project, *region)
+            project.loop_range = tuple(region)
         project.favorite, project.notes = favorite, notes
     except ProjectError as exc:
-        raise ProjectError(f'Preferencias de preparación inválidas: {exc}') from exc
+        raise ProjectError(tr('Preferencias de preparación inválidas: {0}', exc)) from exc
     modes = settings.get('split_stereo', {})
     if not isinstance(modes, dict) or any(not isinstance(k, str) or type(v) is not bool for k, v in modes.items()):
-        raise ProjectError('Preferencias de canales inválidas.')
+        raise ProjectError(tr('Preferencias de canales inválidas.'))
     set_stereo_split(project, False, filename='', persist=False)
     return project
 
 
 def validate_range(project, start, end):
     if type(start) is not int or type(end) is not int or not 0 <= start < end <= project.length:
-        raise ProjectError('El tramo debe tener inicio menor que fin y estar dentro de la grabación.')
+        raise ProjectError(tr('El tramo debe tener inicio menor que fin y estar dentro de la grabación.'))
 
 
 def save_preparation(project, favorite, notes, region):
     if not isinstance(favorite, bool) or not isinstance(notes, str) or len(notes) > 10000:
-        raise ProjectError('Las notas admiten hasta 10 000 caracteres.')
+        raise ProjectError(tr('Las notas admiten hasta 10 000 caracteres.'))
     if region is not None:
         validate_range(project, *region)
     data = title_settings(project.path)
     data.update(favorite=favorite, notes=notes, export_range=list(region) if region else None)
     save_settings(project, data)
     project.favorite, project.notes, project.export_range = favorite, notes, region
+
+
+def save_loop_range(project, region):
+    if region is not None:
+        validate_range(project, *region)
+    data = title_settings(project.path)
+    data['loop_range'] = list(region) if region is not None else None
+    save_settings(project, data)
+    project.loop_range = region
 
 
 class Renderer:
@@ -339,17 +356,22 @@ class Renderer:
     def close(self):
         self.stack.close()
 
-    def track_block(self, track: Track, start: int, count: int):
+    def track_block(self, track: Track, start: int, count: int, cache=None):
         out = np.zeros((count, track.channels), dtype=np.float64)
         for c in track.clips:
             lo, hi = max(start, c.start), min(start+count, c.start+c.frames)
             if c.missing or hi <= lo:
                 continue
             f = self.files[c.path]
-            f.seek(c.source_start+lo-c.start)
-            data = f.read(hi-lo, dtype='float64', always_2d=True)
+            key = (c.path, c.source_start+lo-c.start, hi-lo)
+            data = cache.get(key) if cache is not None else None
+            if data is None:
+                f.seek(key[1])
+                data = f.read(hi-lo, dtype='float64', always_2d=True)
+                if cache is not None:
+                    cache[key] = data
             if len(data) != hi-lo:
-                raise ProjectError(f'Audio truncado: {c.path.name}')
+                raise ProjectError(tr('Audio truncado: {0}', c.path.name))
             if c.channel is not None:
                 data = data[:, c.channel:c.channel+1]
             if c.channels == 1 and track.channels == 2:
@@ -360,8 +382,9 @@ class Renderer:
     def mix(self, start: int, count: int, master: float = 1.0, center_mono=False):
         out = np.zeros((count, 2), dtype=np.float64)
         solo = any(t.solo for t in self.project.tracks)
+        cache = {}  # Shared L/R source reads, bounded to this audio block.
         for t in self.project.tracks:
-            block = self.track_block(t, start, count)
+            block = self.track_block(t, start, count, cache)
             t.peak = float(np.abs(block).max(initial=0))
             if t.mute or (solo and not t.solo):
                 continue
@@ -384,17 +407,17 @@ class ExportCancelled(Exception):
 def export_stems(project: Project, parent: Path, fmt='WAV', progress=None, cancel=None, create_rpp=False, portable=False, naming='track'):
     """Export dry 24-bit stems atomically into a NEW directory. No source writes."""
     if fmt not in ('WAV', 'FLAC'):
-        raise ValueError('Formato no compatible')
+        raise ValueError(tr('Formato no compatible'))
     if naming not in ('track', 'project_track'):
-        raise ValueError('Nombre de archivo no compatible')
+        raise ValueError(tr('Nombre de archivo no compatible'))
     if any(c.missing for t in project.tracks for c in t.clips):
-        raise ProjectError('Faltan WAV. Localiza los archivos antes de exportar.')
+        raise ProjectError(tr('Faltan WAV. Localiza los archivos antes de exportar.'))
     start, end = project.export_range or (0, project.length)
     validate_range(project, start, end)
     length = end-start
     parent = Path(parent).resolve()
     parent.mkdir(parents=True, exist_ok=True)
-    safe = re.sub(r'[^\w\-]+', '_', project.name)[:80] or 'Proyecto'
+    safe = re.sub(r'[^\w\-]+', '_', project.name)[:80] or tr('Proyecto')
     target = parent / (safe + '_stems')
     index = 2
     while target.exists():
@@ -420,7 +443,7 @@ def export_stems(project: Project, parent: Path, fmt='WAV', progress=None, cance
                     count = min(65536, end-pos)
                     block = renderer.track_block(t, pos, count)
                     if np.any(block > 1-2**-23) or np.any(block < -1):
-                        raise ProjectError(f'La suma de clips de {t.name} satura. No se exportó audio recortado.')
+                        raise ProjectError(tr('La suma de clips de {0} satura. No se exportó audio recortado.', t.name))
                     f.write(block)
                     done += count
                     if progress:

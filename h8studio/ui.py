@@ -1,19 +1,20 @@
 from __future__ import annotations
+from .i18n import tr, set_language
 from pathlib import Path
 import math
 import sys
 import threading
 
-from PySide6.QtCore import Qt, QThread, Signal, QTimer, QRectF, QEvent, QStandardPaths
+from PySide6.QtCore import Qt, QThread, Signal, QTimer, QRectF, QEvent, QStandardPaths, QTranslator, QLibraryInfo
 from PySide6.QtGui import QColor, QPainter, QPen, QFont, QKeySequence, QShortcut, QFontDatabase
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QFileDialog, QListWidget, QListWidgetItem, QSplitter, QScrollArea,
     QSlider, QCheckBox, QComboBox, QMessageBox, QProgressBar, QInputDialog, QLineEdit, QStackedWidget,
-    QToolButton, QMenu, QWidgetAction, QSizePolicy)
+    QToolButton, QMenu, QWidgetAction, QSizePolicy, QTextEdit, QPlainTextEdit, QAbstractSpinBox)
 
 from .core import read_project, waveform, export_stems, ExportCancelled, rename_project, rename_track, title_settings, ProjectError, set_stereo_split
 from .audio import Player
-from .dialogs import PreparationDialog, TemplatesDialog, show_report, LocateDialog, ExportOptionsDialog
+from .dialogs import PreparationDialog, TemplatesDialog, show_report, LocateDialog, ExportOptionsDialog, LoopDialog, AboutDialog
 from .workflows import export_batch, analyze_project
 from .platforms import project_files
 from .preferences import Preferences, export_options, library_entry, matches_entry
@@ -42,7 +43,7 @@ class Job(QThread):
         try:
             self.result.emit(self.function(self))
         except ExportCancelled:
-            self.failed.emit('Tarea cancelada. No se publicaron archivos incompletos.')
+            self.failed.emit(tr('Tarea cancelada. No se publicaron archivos incompletos.'))
         except Exception as exc:
             self.failed.emit(str(exc))
 
@@ -87,22 +88,22 @@ class Timeline(QWidget):
                 track.gain = 10**(v/200)
                 label.setText(f'{v/10:.1f} dB')
             gain.valueChanged.connect(change)
-            gain.setToolTip('Volumen de escucha. No modifica los stems.')
+            gain.setToolTip(tr('Volumen de escucha. No modifica los stems.'))
             for w in (mute, solo, gain, value):
                 w.show()
                 self.controls.append(w)
-            rename = QPushButton('Nombre…', self)
+            rename = QPushButton(tr('Nombre…'), self)
             rename.setGeometry(172, y+8, 78, 29)
             rename.setStyleSheet('padding:3px;font-size:11px;')
-            rename.setToolTip('Etiquetar esta pista con el nombre del instrumento')
+            rename.setToolTip(tr('Etiquetar esta pista con el nombre del instrumento'))
             rename.clicked.connect(lambda checked=False, index=i: self.rename_requested.emit(index))
             rename.show()
             self.controls.append(rename)
             if t.channels == 2 or t.output_channel is not None:
-                channels = QPushButton('2 mono' if t.channels == 2 else 'Estéreo', self)
+                channels = QPushButton('2 mono' if t.channels == 2 else tr('Estéreo'), self)
                 channels.setGeometry(178, y+45, 72, 30)
                 channels.setStyleSheet('padding:3px;font-size:11px;')
-                channels.setToolTip('Alternar una pista estéreo y dos pistas mono L/R; también afecta a los stems')
+                channels.setToolTip(tr('Alternar una pista estéreo y dos pistas mono L/R; también afecta a los stems'))
                 channels.clicked.connect(lambda checked=False, index=i: self.split_requested.emit(index))
                 channels.show()
                 self.controls.append(channels)
@@ -128,7 +129,7 @@ class Timeline(QWidget):
         p.setFont(QFont(QApplication.font().family(), 9))
         if not self.project:
             p.setPen(QColor('#91a1b5'))
-            p.drawText(self.rect(), Qt.AlignCenter, 'Abre un proyecto .h8prj para ver sus pistas')
+            p.drawText(self.rect(), Qt.AlignCenter, tr('Abre un proyecto .h8prj para ver sus pistas'))
             return
         duration = self.project.length/self.project.rate
         scale = max(1, (self.width()-self.LEFT)/110)
@@ -152,7 +153,7 @@ class Timeline(QWidget):
             p.drawText(18, y+25, p.fontMetrics().elidedText(t.name, Qt.ElideRight, 146))
             p.setFont(QFont(QApplication.font().family(), 9))
             p.setPen(QColor('#8fa0b5'))
-            p.drawText(18, y+44, 'Estéreo · 2 canales' if t.channels == 2 else 'Mono · 1 canal')
+            p.drawText(18, y+44, tr('Estéreo · 2 canales') if t.channels == 2 else tr('Mono · 1 canal'))
             peak = self.meter_values[i] if i < len(self.meter_values) else 0
             db = 20*math.log10(peak) if peak > 0 else -90
             p.fillRect(QRectF(18, y+120, 155, 6), QColor('#34465d'))
@@ -172,7 +173,7 @@ class Timeline(QWidget):
                 p.save()
                 p.setClipRect(rect.adjusted(7, 1, -7, -1))
                 p.drawText(QRectF(x1+10, y+15, max(1, x2-x1-20), 22), Qt.AlignLeft,
-                           ('FALTA AUDIO · ' if c.missing else '')+c.path.name)
+                           (tr('FALTA AUDIO · ') if c.missing else '')+c.path.name)
                 peaks = self.peaks.get((str(c.path), c.channel))
                 if peaks is None:
                     peaks = self.peaks.get(str(c.path))
@@ -194,6 +195,9 @@ class Timeline(QWidget):
         if self.project.export_range:
             a, b = self.project.export_range
             p.fillRect(QRectF(self.x_for(a), 31, self.x_for(b)-self.x_for(a), 8), QColor('#55d9b2'))
+        if self.project.loop_range:
+            a, b = self.project.loop_range
+            p.fillRect(QRectF(self.x_for(a), 23, self.x_for(b)-self.x_for(a), 5), QColor('#f4c276'))
         p.setPen(QPen(QColor('#fff0c2'), 2))
         p.drawLine(x, 30, x, self.height())
         p.end()
@@ -225,16 +229,16 @@ class Console(Timeline):
             fader = QSlider(Qt.Vertical, self)
             fader.setRange(-600, 60)
             fader.setValue(round(200*math.log10(max(track.gain, .001))))
-            fader.setToolTip('Volumen de escucha; no modifica los stems. Arriba: +6 dB; abajo: −60 dB.')
+            fader.setToolTip(tr('Volumen de escucha; no modifica los stems. Arriba: +6 dB; abajo: −60 dB.'))
             value = QLabel(f'{fader.value()/10:.1f} dB', self)
             value.setAlignment(Qt.AlignCenter)
             def change(v, t=track, label=value):
                 t.gain = 10**(v/200)
                 label.setText(f'{v/10:.1f} dB')
             fader.valueChanged.connect(change)
-            rename = QPushButton('Nombre…', self)
+            rename = QPushButton(tr('Nombre…'), self)
             rename.clicked.connect(lambda checked=False, index=i: self.rename_requested.emit(index))
-            channels = QPushButton('2 mono' if track.channels == 2 else 'Estéreo', self)
+            channels = QPushButton('2 mono' if track.channels == 2 else tr('Estéreo'), self)
             channels.setEnabled(track.channels == 2 or track.output_channel is not None)
             channels.clicked.connect(lambda checked=False, index=i: self.split_requested.emit(index))
             for w in (rename, channels):
@@ -306,7 +310,7 @@ class Console(Timeline):
                 p.fillRect(rect, QColor('#482b35') if clip.missing else QColor('#223d40'))
                 p.setPen(QColor('#ed8795') if clip.missing else color)
                 p.drawText(QRectF(start+4, self.WAVE_TOP+4, max(1, end-start-8), 22), Qt.AlignLeft,
-                           'FALTA AUDIO' if clip.missing else clip.path.name)
+                           tr('FALTA AUDIO') if clip.missing else clip.path.name)
                 peaks = self.peaks.get((str(clip.path), clip.channel))
                 if peaks is None:
                     peaks = self.peaks.get(str(clip.path))
@@ -319,7 +323,10 @@ class Console(Timeline):
                         p.drawLine(xx, int(134-group[:, 1].max()*25), xx, int(134-group[:, 0].min()*25))
             if self.project.export_range:
                 a, b = self.project.export_range
-                p.fillRect(QRectF(x+14+a/duration*width, self.WAVE_TOP, (b-a)/duration*width, 4), color)
+                p.fillRect(QRectF(x+14+a/duration*width, self.WAVE_TOP, (b-a)/duration*width, 4), QColor('#55d9b2'))
+            if self.project.loop_range:
+                a, b = self.project.loop_range
+                p.fillRect(QRectF(x+14+a/duration*width, self.WAVE_TOP+6, (b-a)/duration*width, 4), QColor('#f4c276'))
             cursor = int(x+14+self.position/duration*width)
             p.setPen(QPen(QColor('#fff0c2'), 2))
             p.drawLine(cursor, self.WAVE_TOP, cursor, self.WAVE_BOTTOM)
@@ -381,7 +388,7 @@ class VerticalConsole(Console):
             p.drawText(x+14, 27, p.fontMetrics().elidedText(track.name, Qt.ElideRight, self.COLUMN-28))
             p.setFont(QFont(QApplication.font().family(), 8))
             p.setPen(QColor('#8fa0b5'))
-            p.drawText(x+14, 106, '0:00  ↓ tiempo')
+            p.drawText(x+14, 106, tr('0:00  ↓ tiempo'))
             p.drawText(QRectF(x+14, self.height()-28, 120, 22), Qt.AlignLeft, clock_text(self.project.length/self.project.rate))
             p.fillRect(rect, QColor('#111720'))
             p.save()
@@ -404,10 +411,13 @@ class VerticalConsole(Console):
                         center = rect.center().x()
                         p.drawLine(int(center+group[:, 0].min()*50), yy, int(center+group[:, 1].max()*50), yy)
                 if clip.missing:
-                    p.drawText(QRectF(rect.left()+4, start+4, rect.width()-8, 36), Qt.TextWordWrap, 'FALTA AUDIO')
+                    p.drawText(QRectF(rect.left()+4, start+4, rect.width()-8, 36), Qt.TextWordWrap, tr('FALTA AUDIO'))
             if self.project.export_range:
                 a, b = self.project.export_range
-                p.fillRect(QRectF(rect.left(), rect.top()+a/duration*rect.height(), 4, (b-a)/duration*rect.height()), color)
+                p.fillRect(QRectF(rect.left(), rect.top()+a/duration*rect.height(), 4, (b-a)/duration*rect.height()), QColor('#55d9b2'))
+            if self.project.loop_range:
+                a, b = self.project.loop_range
+                p.fillRect(QRectF(rect.right()-4, rect.top()+a/duration*rect.height(), 4, (b-a)/duration*rect.height()), QColor('#f4c276'))
             p.setPen(QPen(QColor('#8fa0b5'), 1, Qt.DotLine))
             for fraction in (.25, .5, .75):
                 yy = int(rect.top()+rect.height()*fraction)
@@ -450,13 +460,22 @@ class Window(QMainWindow):
         if state_path is None:
             state_path = Path(QStandardPaths.writableLocation(QStandardPaths.AppConfigLocation))/'preferences.json'
         self.preferences = Preferences(state_path)
+        set_language(self.preferences.data.get('language', 'en'))
+        app = QApplication.instance()
+        if getattr(app, '_h8_translator', None):
+            app.removeTranslator(app._h8_translator)
+        app._h8_translator = QTranslator(app)
+        if self.preferences.data.get('language') == 'es':
+            if app._h8_translator.load('qtbase_es', QLibraryInfo.path(QLibraryInfo.TranslationsPath)):
+                app.installTranslator(app._h8_translator)
+        QApplication.instance().installEventFilter(self)
         self.session = self.preferences.data.get('session', {})
         if not isinstance(self.session, dict):
             self.session = {}
         self.restore_position = None
         self.portable_delivery = False
         self.export_naming = 'track'
-        self.setWindowTitle('H8 Studio · Proyectos Zoom')
+        self.setWindowTitle(tr('H8 Studio · Proyectos Zoom'))
         self.resize(1320, 800)
         self.setMinimumSize(920, 620)
         self.player = Player()
@@ -474,15 +493,18 @@ class Window(QMainWindow):
         brand = QLabel('H8 <span style="color:#55d9b2">STUDIO</span>')
         brand.setStyleSheet('font-size:18px;font-weight:700')
         heading.addWidget(brand)
-        self.library_toggle = QCheckBox('Biblioteca')
+        self.library_toggle = QCheckBox(tr('Biblioteca'))
         self.library_toggle.setChecked(True)
         heading.addWidget(self.library_toggle)
         heading.addStretch()
-        self.open_button = QPushButton('Abrir proyecto…')
-        self.folder_button = QPushButton('Explorar carpeta…')
+        self.about_button = QPushButton(tr('Acerca de…'))
+        self.about_button.clicked.connect(self.about_dialog)
+        heading.addWidget(self.about_button)
+        self.open_button = QPushButton(tr('Abrir proyecto…'))
+        self.folder_button = QPushButton(tr('Explorar carpeta…'))
         self.open_button.clicked.connect(self.open_dialog)
         self.folder_button.clicked.connect(self.folder_dialog)
-        heading.addWidget(compact_menu('Abrir', (self.open_button, self.folder_button), self))
+        heading.addWidget(compact_menu(tr('Abrir'), (self.open_button, self.folder_button), self))
         layout.addLayout(heading)
         split = QSplitter()
         side = QWidget()
@@ -490,15 +512,15 @@ class Window(QMainWindow):
         sl.setContentsMargins(0, 0, 6, 0)
         sl.setSpacing(4)
         self.library_toggle.toggled.connect(side.setVisible)
-        self.library_label = QLabel('PROYECTOS')
+        self.library_label = QLabel(tr('PROYECTOS'))
         sl.addWidget(self.library_label)
         self.search = QLineEdit()
-        self.search.setPlaceholderText('Buscar nombre, notas o carpeta…')
+        self.search.setPlaceholderText(tr('Buscar nombre, notas o carpeta…'))
         self.search.setClearButtonEnabled(True)
         self.search.textChanged.connect(self.filter_library)
         sl.addWidget(self.search)
         self.library_filter = QComboBox()
-        self.library_filter.addItems(['Todos los proyectos', '★ Favoritos', 'Falta audio / error de lectura'])
+        self.library_filter.addItems([tr('Todos los proyectos'), tr('★ Favoritos'), tr('Falta audio / error de lectura')])
         self.library_filter.currentIndexChanged.connect(self.filter_library)
         sl.addWidget(self.library_filter)
         self.library = QListWidget()
@@ -506,22 +528,22 @@ class Window(QMainWindow):
         self.library.itemActivated.connect(lambda item: self.load(item.data(Qt.UserRole)))
         sl.addWidget(self.library)
         selection = QHBoxLayout()
-        for label, mode in [('Todas', 'all'), ('Ninguna', 'none'), ('★', 'favorites')]:
+        for label, mode in [(tr('Todas'), 'all'), (tr('Ninguna'), 'none'), ('★', 'favorites')]:
             button = QPushButton(label)
-            button.setToolTip('Marcar favoritas para el lote' if mode == 'favorites' else label)
+            button.setToolTip(tr('Marcar favoritas para el lote') if mode == 'favorites' else label)
             button.clicked.connect(lambda checked=False, value=mode: self.check_projects(value))
             selection.addWidget(button)
         sl.addLayout(selection)
         self.channel_mode = QComboBox()
-        self.channel_mode.addItems(['Usar elección guardada', 'Una pista estéreo', 'Dos pistas mono (L/R)'])
-        self.channel_mode.setToolTip('Al abrir guarda la elección. Al exportar un lote solo cambia esa exportación.')
-        self.channels_batch_button = QPushButton('Aplicar canales al lote')
+        self.channel_mode.addItems([tr('Usar elección guardada'), tr('Una pista estéreo'), tr('Dos pistas mono (L/R)')])
+        self.channel_mode.setToolTip(tr('Al abrir guarda la elección. Al exportar un lote solo cambia esa exportación.'))
+        self.channels_batch_button = QPushButton(tr('Aplicar canales al lote'))
         self.channels_batch_button.clicked.connect(self.channels_batch)
-        sl.addWidget(compact_menu('Canales al abrir / lote', (self.channel_mode, self.channels_batch_button), self))
-        self.batch_button = QPushButton('Exportar lote marcado…')
+        sl.addWidget(compact_menu(tr('Canales al abrir / lote'), (self.channel_mode, self.channels_batch_button), self))
+        self.batch_button = QPushButton(tr('Exportar lote marcado…'))
         self.batch_button.clicked.connect(self.batch_dialog)
         sl.addWidget(self.batch_button)
-        hint = QLabel('Doble clic: abrir · casillas: lote')
+        hint = QLabel(tr('Doble clic: abrir · casillas: lote'))
         hint.setWordWrap(True)
         hint.setStyleSheet('color:#8fa0b5;font-size:12px')
         sl.addWidget(hint)
@@ -530,35 +552,35 @@ class Window(QMainWindow):
         ml = QVBoxLayout(main)
         ml.setContentsMargins(4, 0, 0, 0)
         ml.setSpacing(4)
-        self.title = QLabel('Tu grabación, lista para continuar.')
+        self.title = QLabel(tr('Tu grabación, lista para continuar.'))
         self.title.setTextFormat(Qt.PlainText)
         self.title.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         self.title.setStyleSheet('font-size:18px;font-weight:600')
-        self.subtitle = QLabel('Abre un archivo .h8prj con sus WAV en la misma carpeta.')
+        self.subtitle = QLabel(tr('Abre un archivo .h8prj con sus WAV en la misma carpeta.'))
         self.subtitle.setStyleSheet('color:#9eafc3')
         title_row = QHBoxLayout()
         title_row.addWidget(self.title, 1)
-        self.rename_button = QPushButton('Cambiar título…')
+        self.rename_button = QPushButton(tr('Cambiar título…'))
         self.rename_button.clicked.connect(self.rename_dialog)
         ml.addLayout(title_row)
         ml.addWidget(self.subtitle)
-        self.prepare_button = QPushButton('Favorita, notas y tramo…')
+        self.prepare_button = QPushButton(tr('Favorita, notas y tramo…'))
         self.prepare_button.clicked.connect(self.prepare_dialog)
-        self.templates_button = QPushButton('Plantillas…')
+        self.templates_button = QPushButton(tr('Plantillas…'))
         self.templates_button.clicked.connect(self.templates_dialog)
-        self.problems_button = QPushButton('Resumen de problemas…')
+        self.problems_button = QPushButton(tr('Resumen de problemas…'))
         self.problems_button.clicked.connect(self.problems_dialog)
-        self.locate_button = QPushButton('Localizar WAV…')
+        self.locate_button = QPushButton(tr('Localizar WAV…'))
         self.locate_button.clicked.connect(self.locate_dialog)
-        title_row.addWidget(compact_menu('Proyecto', (self.rename_button, self.prepare_button,
+        title_row.addWidget(compact_menu(tr('Proyecto'), (self.rename_button, self.prepare_button,
             self.templates_button, self.problems_button, self.locate_button), self))
-        self.notice = QPushButton('Avisos')
+        self.notice = QPushButton(tr('Avisos'))
         self.notice.setEnabled(False)
-        self.notice.clicked.connect(lambda: show_report(self, 'Observaciones del proyecto', '\n'.join(self.project.warnings)) if self.project else None)
+        self.notice.clicked.connect(lambda: show_report(self, tr('Observaciones del proyecto'), '\n'.join(self.project.warnings)) if self.project else None)
         title_row.addWidget(self.notice)
         toolbar = QHBoxLayout()
-        self.play_button = QPushButton('▶  Reproducir')
-        self.stop_button = QPushButton('■  Inicio')
+        self.play_button = QPushButton(tr('▶  Reproducir'))
+        self.stop_button = QPushButton(tr('■  Inicio'))
         self.play_button.clicked.connect(self.toggle_play)
         self.stop_button.clicked.connect(self.stop)
         toolbar.addWidget(self.play_button)
@@ -567,19 +589,23 @@ class Window(QMainWindow):
         self.time_label.setFont(QFontDatabase.systemFont(QFontDatabase.FixedFont))
         self.time_label.setStyleSheet('font-size:12px;color:#fff0c2')
         toolbar.addWidget(self.time_label)
-        self.loop_button = QCheckBox('Bucle')
-        self.loop_button.setToolTip('Repite el tramo de Favorita, notas y tramo; no cambia la exportación.')
+        self.loop_button = QCheckBox(tr('Bucle'))
+        self.loop_button.setToolTip(tr('Repite el tramo del bucle o toda la toma. Usa A–B para definir inicio y fin.'))
         self.loop_button.toggled.connect(lambda value: setattr(self.player, 'loop', value))
         toolbar.addWidget(self.loop_button)
+        self.loop_range_button = QPushButton('A–B…')
+        self.loop_range_button.setToolTip(tr('Definir el tramo del bucle'))
+        self.loop_range_button.clicked.connect(self.loop_dialog)
+        toolbar.addWidget(self.loop_range_button)
         toolbar.addStretch()
         self.view_mode = QComboBox()
-        self.view_mode.addItems(['Línea de tiempo', 'Consola', 'Consola vertical'])
+        self.view_mode.addItems([tr('Línea de tiempo'), tr('Consola'), tr('Consola vertical')])
         self.view_mode.currentIndexChanged.connect(self.change_view)
         toolbar.addWidget(self.view_mode)
         toolbar.addWidget(QLabel('Zoom'))
         self.zoom = QComboBox()
-        self.zoom.addItems(['Ajustar', '2×', '4×', '8×'])
-        self.zoom.setToolTip('Zoom de la línea de tiempo. Las consolas muestran la toma completa.')
+        self.zoom.addItems([tr('Ajustar'), '2×', '4×', '8×'])
+        self.zoom.setToolTip(tr('Zoom de la línea de tiempo. Las consolas muestran la toma completa.'))
         self.zoom.currentIndexChanged.connect(self.resize_timeline)
         toolbar.addWidget(self.zoom)
         ml.addLayout(toolbar)
@@ -610,7 +636,7 @@ class Window(QMainWindow):
         self.views.addWidget(self.vertical_scroll)
         ml.addWidget(self.views, 1)
         bottom = QHBoxLayout()
-        bottom.addWidget(QLabel('Escucha'))
+        bottom.addWidget(QLabel(tr('Escucha')))
         self.master = QSlider(Qt.Horizontal)
         self.master.setRange(-600, 0)
         self.master.setValue(-60)
@@ -621,36 +647,36 @@ class Window(QMainWindow):
         self.meter = QLabel('−∞ dBFS')
         self.meter.setMinimumWidth(105)
         bottom.addWidget(self.meter)
-        self.center_mono = QCheckBox('Mono centrado')
-        self.center_mono.setToolTip('Escuchar los canales mono L/R por ambos altavoces. Solo monitoreo.')
+        self.center_mono = QCheckBox(tr('Mono centrado'))
+        self.center_mono.setToolTip(tr('Escuchar los canales mono L/R por ambos altavoces. Solo monitoreo.'))
         self.center_mono.toggled.connect(lambda value: setattr(self.player, 'center_mono', value))
         bottom.addWidget(self.center_mono)
         bottom.addStretch()
-        self.rpp = QCheckBox('Crear .rpp')
+        self.rpp = QCheckBox(tr('Crear .rpp'))
         self.rpp.setChecked(True)
         self.format = QComboBox()
         self.format.addItems(['WAV · 24 bits', 'FLAC · 24 bits'])
-        self.export_button = QPushButton('Exportar…')
+        self.export_button = QPushButton(tr('Exportar…'))
         self.export_button.setObjectName('primary')
         self.export_button.clicked.connect(self.export_dialog)
         bottom.addWidget(self.export_button)
         ml.addLayout(bottom)
-        self.options_button = QPushButton('Exportación y presets…')
+        self.options_button = QPushButton(tr('Exportación y presets…'))
         self.options_button.clicked.connect(self.options_dialog)
-        self.export_menu = compact_menu('Exportación', (self.format, self.rpp, self.options_button), self)
+        self.export_menu = compact_menu(tr('Exportación'), (self.format, self.rpp, self.options_button), self)
         bottom.insertWidget(bottom.count()-1, self.export_menu)
         self.options_summary = QLabel('', self)
         self.options_summary.hide()
-        self.meter.setToolTip('Pico de escucha en dBFS. Los medidores de pista muestran el pico de entrada.')
+        self.meter.setToolTip(tr('Pico de escucha en dBFS. Los medidores de pista muestran el pico de entrada.'))
         split.addWidget(main)
         split.setSizes([220, 1050])
         layout.addWidget(split, 1)
         status = QHBoxLayout()
-        self.status = QLabel('Listo')
+        self.status = QLabel(tr('Listo'))
         self.progress = QProgressBar()
         self.progress.setMaximumWidth(200)
         self.progress.hide()
-        self.cancel_button = QPushButton('Cancelar tarea')
+        self.cancel_button = QPushButton(tr('Cancelar tarea'))
         self.cancel_button.clicked.connect(lambda: self.job.cancel.set() if self.job else None)
         self.cancel_button.hide()
         status.addWidget(self.status, 1)
@@ -688,10 +714,32 @@ class Window(QMainWindow):
         if self.preferences.error:
             self.status.setText(self.preferences.error)
 
+    def eventFilter(self, watched, event):
+        # Preserve spaces and Home while editing, including dialog text fields.
+        if event.type() == QEvent.ShortcutOverride and event.key() in (Qt.Key_Space, Qt.Key_Home):
+            if isinstance(watched, (QLineEdit, QTextEdit, QPlainTextEdit, QAbstractSpinBox)):
+                event.accept()
+                return True
+        return super().eventFilter(watched, event)
+
+    def about_dialog(self):
+        if not self.job:
+            AboutDialog(self.preferences, self).exec()
+
+    def loop_dialog(self):
+        if self.project and not self.job:
+            self.player.pause()
+            if LoopDialog(self.project, self.player.position, self).exec():
+                self.loop_button.setChecked(True)
+                for view in (self.timeline, self.console, self.vertical_console):
+                    view.update()
+
     def set_busy(self, busy):
         self.locate_button.setEnabled(not busy and self.project is not None and bool(missing_sources(self.project)))
         self.options_button.setEnabled(not busy)
-        self.loop_button.setEnabled(not busy and self.project is not None and self.project.export_range is not None)
+        self.loop_button.setEnabled(not busy and self.project is not None)
+        self.loop_range_button.setEnabled(not busy and self.project is not None)
+        self.about_button.setEnabled(not busy)
         for w in (self.prepare_button, self.templates_button, self.problems_button):
             w.setEnabled(not busy and self.project is not None)
         self.batch_button.setEnabled(not busy)
@@ -721,8 +769,8 @@ class Window(QMainWindow):
         self.channel_mode.setCurrentIndex(options['channels'])
         self.rpp.setChecked(options['rpp'])
         self.portable_delivery, self.export_naming = options['portable'], options['naming']
-        self.options_summary.setText('Entrega portátil: .rpp, notas y checksums incluidos' if options['portable']
-                                     else 'Stems · nombres '+('por instrumento' if options['naming'] == 'track' else 'con prefijo de proyecto'))
+        self.options_summary.setText(tr('Entrega portátil: .rpp, notas y checksums incluidos') if options['portable']
+                                     else tr('Stems · nombres ')+(tr('por instrumento') if options['naming'] == 'track' else tr('con prefijo de proyecto')))
         self.export_menu.setToolTip(self.options_summary.text())
 
     def options_dialog(self):
@@ -759,12 +807,12 @@ class Window(QMainWindow):
         try:
             self.preferences.save()
         except OSError as exc:
-            QMessageBox.warning(self, 'Preferencias', f'No se pudo guardar la sesión: {exc}')
+            QMessageBox.warning(self, tr('Preferencias'), tr('No se pudo guardar la sesión: {0}', exc))
 
     def locate_dialog(self):
         if not self.project or self.job:
             return
-        folder = QFileDialog.getExistingDirectory(self, 'Buscar WAV en esta carpeta y subcarpetas', str(self.library_root or self.project.path.parent))
+        folder = QFileDialog.getExistingDirectory(self, tr('Buscar WAV en esta carpeta y subcarpetas'), str(self.library_root or self.project.path.parent))
         if not folder:
             return
         self.player.pause()
@@ -780,13 +828,13 @@ class Window(QMainWindow):
             def loaded(result):
                 self.loaded(result)
                 self.player.position = min(position, self.project.length)
-                self.status.setText('WAV asociados y guardados. Los archivos originales no se modificaron.')
+                self.status.setText(tr('WAV asociados y guardados. Los archivos originales no se modificaron.'))
             action = lambda: self.start_job(work, loaded)
             if self.job:
                 self.after_job = action
             else:
                 action()
-        self.status.setText('Buscando WAV compatibles…')
+        self.status.setText(tr('Buscando WAV compatibles…'))
         self.start_job(lambda job: find_candidates(project, folder, job.cancel), found, exporting=True)
 
     def scan(self, folder):
@@ -813,7 +861,7 @@ class Window(QMainWindow):
             shown = matches_entry(item.data(Qt.UserRole+1), self.search.text(), self.library_filter.currentIndex())
             item.setHidden(not shown)
             visible += int(shown)
-        self.library_label.setText(f'PROYECTOS  /  {visible} de {self.library.count()}')
+        self.library_label.setText(tr('PROYECTOS  /  {0} de {1}', visible, self.library.count()))
 
     def checked_paths(self):
         return [self.library.item(i).data(Qt.UserRole) for i in range(self.library.count())
@@ -843,12 +891,11 @@ class Window(QMainWindow):
                 item.setToolTip(f'{p.name}\n{p.notes}\n{p.path}')
                 item.setData(Qt.UserRole+1, library_entry(p.path))
         a, b = p.export_range or (0, p.length)
-        self.subtitle.setText(f'{len(p.tracks)} pistas · {p.rate/1000:g} kHz · Exportar {clock_text(a/p.rate)} → {clock_text(b/p.rate)}')
+        self.subtitle.setText(tr('{0} pistas · {1:g} kHz · Exportar {2} → {3}', len(p.tracks), p.rate / 1000, clock_text(a / p.rate), clock_text(b / p.rate)))
         self.timeline.update()
         self.filter_library()
-        self.loop_button.setEnabled(not self.job and p.export_range is not None)
-        if p.export_range is None:
-            self.loop_button.setChecked(False)
+        self.loop_button.setEnabled(not self.job)
+        self.loop_range_button.setEnabled(not self.job)
 
     def prepare_dialog(self):
         if self.project and not self.job:
@@ -873,7 +920,7 @@ class Window(QMainWindow):
         paths = self.checked_paths() or [str(self.project.path)]
         self.player.pause()
         def work(job):
-            rows = ['Análisis de las tomas completas. Pico ≥ −0,1 dBFS: posible saturación; RMS < −60 dBFS: nivel muy bajo.\n']
+            rows = [tr('Análisis de las tomas completas. Pico ≥ −0,1 dBFS: posible saturación; RMS < −60 dBFS: nivel muy bajo.\n')]
             for i, path in enumerate(paths):
                 if job.cancel.is_set():
                     raise ExportCancelled()
@@ -887,24 +934,24 @@ class Window(QMainWindow):
                 except Exception as exc:
                     rows.append(f'ERROR: {exc}')
             return '\n'.join(rows)
-        self.status.setText('Analizando proyectos marcados o la toma abierta…')
-        self.start_job(work, lambda report: show_report(self, 'Resumen de problemas', report), exporting=True)
+        self.status.setText(tr('Analizando proyectos marcados o la toma abierta…'))
+        self.start_job(work, lambda report: show_report(self, tr('Resumen de problemas'), report), exporting=True)
 
     def batch_dialog(self):
         if self.job:
             return
         paths = self.checked_paths()
         if not paths:
-            self.job_error('Marca las casillas de los proyectos que quieres exportar.')
+            self.job_error(tr('Marca las casillas de los proyectos que quieres exportar.'))
             return
-        folder = QFileDialog.getExistingDirectory(self, f'Exportar {len(paths)} proyectos: destino del lote', str(self.library_root or Path.home()))
+        folder = QFileDialog.getExistingDirectory(self, tr('Exportar {0} proyectos: destino del lote', len(paths)), str(self.library_root or Path.home()))
         if not folder:
             return
         self.player.pause()
         fmt, rpp = ('WAV' if self.format.currentIndex() == 0 else 'FLAC'), self.rpp.isChecked()
         split_stereo = self.selected_channel_mode()
         portable, naming = self.portable_delivery, self.export_naming
-        self.status.setText(f'Exportando {len(paths)} proyectos con sus tramos guardados…')
+        self.status.setText(tr('Exportando {0} proyectos con sus tramos guardados…', len(paths)))
         self.start_job(lambda job: export_batch(paths, Path(folder), fmt, rpp, job.progress.emit, job.cancel, split_stereo=split_stereo, portable=portable, naming=naming), self.batch_finished, exporting=True)
 
     def selected_channel_mode(self):
@@ -915,7 +962,7 @@ class Window(QMainWindow):
             return
         paths, mode = self.checked_paths(), self.selected_channel_mode()
         if not paths or mode is None:
-            self.job_error('Marca proyectos y elige una pista estéreo o dos pistas mono.')
+            self.job_error(tr('Marca proyectos y elige una pista estéreo o dos pistas mono.'))
             return
         self.player.pause()
         current = self.project
@@ -924,14 +971,14 @@ class Window(QMainWindow):
             rows, refreshed = [], None
             for index, path in enumerate(paths):
                 if job.cancel.is_set():
-                    rows.append('Cancelado: las elecciones ya guardadas se conservan.')
+                    rows.append(tr('Cancelado: las elecciones ya guardadas se conservan.'))
                     break
                 try:
                     p = current if current and current.path == Path(path).resolve() else read_project(path)
                     set_stereo_split(p, mode)
                     if p is current:
                         refreshed = (p, self.project_peaks(p))
-                    rows.append(f'{Path(path).stem}: canales guardados')
+                    rows.append(tr('{0}: canales guardados', Path(path).stem))
                 except Exception as exc:
                     rows.append(f'{Path(path).stem}: ERROR: {exc}')
                 job.progress.emit(round(100*(index+1)/len(paths)))
@@ -941,7 +988,7 @@ class Window(QMainWindow):
             if refreshed:
                 self.loaded(refreshed)
                 self.player.position = position
-            show_report(self, 'Canales del lote', '\n'.join(rows))
+            show_report(self, tr('Canales del lote'), '\n'.join(rows))
         self.start_job(work, finished, exporting=True)
 
     @staticmethod
@@ -962,28 +1009,28 @@ class Window(QMainWindow):
         def finished(peaks):
             self.loaded((self.project, peaks))
             self.player.position = position
-            self.status.setText('Canales guardados · la exportación usará las pistas visibles')
+            self.status.setText(tr('Canales guardados · la exportación usará las pistas visibles'))
         self.start_job(lambda job: self.project_peaks(self.project), finished)
 
     def batch_finished(self, result):
-        lines = [f'Exportados: {len(result["completed"])}', f'Fallidos: {len(result["failed"])}',
-                 f'Pendientes: {len(result["pending"])}', 'Cancelado' if result['cancelled'] else 'Lote terminado',
-                 f'Carpeta e informe lote.json: {result["folder"]}']
+        lines = [tr('Exportados: {0}', len(result['completed'])), tr('Fallidos: {0}', len(result['failed'])),
+                 tr('Pendientes: {0}', len(result['pending'])), tr('Cancelado') if result['cancelled'] else tr('Lote terminado'),
+                 tr('Carpeta e informe lote.json: {0}', result['folder'])]
         lines += [f'{Path(x["source"]).stem}: {x["error"]}' for x in result['failed']]
-        self.status.setText(f'Lote: {len(result["completed"])} exportados; {len(result["failed"])} fallidos.')
-        show_report(self, 'Resultado del lote', '\n'.join(lines))
+        self.status.setText(tr('Lote: {0} exportados; {1} fallidos.', len(result['completed']), len(result['failed'])))
+        show_report(self, tr('Resultado del lote'), '\n'.join(lines))
 
     def open_dialog(self):
         if self.job:
             return
-        path, _ = QFileDialog.getOpenFileName(self, 'Abrir proyecto Zoom H8', str(self.library_root or Path.home()), 'Proyecto Zoom (*.h8prj)')
+        path, _ = QFileDialog.getOpenFileName(self, tr('Abrir proyecto Zoom H8'), str(self.library_root or Path.home()), tr('Proyecto Zoom (*.h8prj)'))
         if path:
             self.load(path)
 
     def folder_dialog(self):
         if self.job:
             return
-        folder = QFileDialog.getExistingDirectory(self, 'Carpeta de proyectos', str(self.library_root or Path.home()))
+        folder = QFileDialog.getExistingDirectory(self, tr('Carpeta de proyectos'), str(self.library_root or Path.home()))
         if folder:
             self.scan(folder)
             if self.library.count() == 1:
@@ -1022,7 +1069,7 @@ class Window(QMainWindow):
         if self.job:
             return
         self.player.pause()
-        self.status.setText('Leyendo proyecto y formas de onda…')
+        self.status.setText(tr('Leyendo proyecto y formas de onda…'))
         mode = None if use_saved_channels else self.selected_channel_mode()
         def work(job):
             project = read_project(path)
@@ -1046,29 +1093,29 @@ class Window(QMainWindow):
             self.player.position = max(0, min(position, project.length)) if type(position) is int else 0
             self.restore_position = None
         self.title.setText(project.name)
-        self.subtitle.setText(f'{len(project.tracks)} pistas  ·  {project.rate/1000:g} kHz  ·  {clock_text(project.length/project.rate)}  ·  {project.alignment}')
+        self.subtitle.setText(tr('{0} pistas  ·  {1:g} kHz  ·  {2}  ·  {3}', len(project.tracks), project.rate / 1000, clock_text(project.length / project.rate), project.alignment))
         missing = sum(c.missing for t in project.tracks for c in t.clips)
-        self.notice.setText('Faltan WAV' if missing else f'Avisos ({len(project.warnings)})')
+        self.notice.setText(tr('Faltan WAV') if missing else tr('Avisos ({0})', len(project.warnings)))
         self.notice.setToolTip('\n'.join(project.warnings))
         self.notice.setEnabled(bool(project.warnings))
         self.timeline.set_project(project, peaks)
         self.console.set_project(project, peaks)
         self.vertical_console.set_project(project, peaks)
         self.refresh_preparation()
-        self.status.setText('Proyecto abierto · clic en una onda para mover el cursor · Espacio para reproducir')
+        self.status.setText(tr('Proyecto abierto · clic en una onda para mover el cursor · Espacio para reproducir'))
         self.resize_timeline()
 
     def rename_dialog(self):
         if not self.project or self.job:
             return
-        title, accepted = QInputDialog.getText(self, 'Cambiar título del proyecto',
-            'Título (hasta 100 caracteres):', text=self.project.name)
+        title, accepted = QInputDialog.getText(self, tr('Cambiar título del proyecto'),
+            tr('Título (hasta 100 caracteres):'), text=self.project.name)
         if not accepted:
             return
         try:
             rename_project(self.project, title)
         except (ProjectError, OSError) as exc:
-            self.job_error(f'No se guardó el título: {exc}')
+            self.job_error(tr('No se guardó el título: {0}', exc))
             return
         self.title.setText(self.project.name)
         for i in range(self.library.count()):
@@ -1076,25 +1123,25 @@ class Window(QMainWindow):
             if Path(item.data(Qt.UserRole)).resolve() == self.project.path.resolve():
                 item.setText(('★ ' if self.project.favorite else '') + self.project.name)
                 item.setToolTip(f'{self.project.name}\n{self.project.path}')
-        self.status.setText('Título guardado. Se usará también al exportar los stems.')
+        self.status.setText(tr('Título guardado. Se usará también al exportar los stems.'))
         self.refresh_preparation()
 
     def rename_track_dialog(self, index):
         if not self.project or self.job:
             return
         track = self.project.tracks[index]
-        title, accepted = QInputDialog.getText(self, 'Nombre del instrumento',
-            'Nombre de pista (hasta 100 caracteres):', text=track.name)
+        title, accepted = QInputDialog.getText(self, tr('Nombre del instrumento'),
+            tr('Nombre de pista (hasta 100 caracteres):'), text=track.name)
         if not accepted:
             return
         try:
             rename_track(self.project, track, title)
         except (ProjectError, OSError) as exc:
-            self.job_error(f'No se guardó el nombre: {exc}')
+            self.job_error(tr('No se guardó el nombre: {0}', exc))
             return
         self.timeline.update()
         self.refresh_preparation()
-        self.status.setText(f'Pista guardada: {track.name}. Los stems usarán esta etiqueta.')
+        self.status.setText(tr('Pista guardada: {0}. Los stems usarán esta etiqueta.', track.name))
 
     def change_view(self, index):
         if not hasattr(self, 'views'):
@@ -1125,7 +1172,7 @@ class Window(QMainWindow):
             else:
                 self.player.play()
         except Exception as exc:
-            self.job_error(f'No se pudo abrir la salida de audio: {exc}')
+            self.job_error(tr('No se pudo abrir la salida de audio: {0}', exc))
 
     def stop(self):
         self.player.pause()
@@ -1139,18 +1186,15 @@ class Window(QMainWindow):
                 self.job_error(str(exc))
 
     def tick(self):
-        self.play_button.setText('Ⅱ  Pausa' if self.player.playing else '▶  Reproducir')
+        self.play_button.setText(tr('Ⅱ  Pausa') if self.player.playing else tr('▶  Reproducir'))
         if self.project:
             self.time_label.setText(f'{clock_text(self.player.position/self.project.rate)} / {clock_text(self.project.length/self.project.rate)}')
-            self.timeline.position = self.player.position
-            self.timeline.meter_values = [t.peak if self.player.playing else 0 for t in self.project.tracks]
-            self.timeline.update()
-            self.console.position = self.player.position
-            self.console.meter_values = self.timeline.meter_values
-            self.console.update()
-            self.vertical_console.position = self.player.position
-            self.vertical_console.meter_values = self.timeline.meter_values
-            self.vertical_console.update()
+            view = (self.timeline, self.console, self.vertical_console)[self.view_mode.currentIndex()]
+            meters = [t.peak if self.player.playing else 0 for t in self.project.tracks]
+            if view.position != self.player.position or view.meter_values != meters:
+                view.position = self.player.position
+                view.meter_values = meters
+                view.update()
         peak = self.player.peak if self.player.playing else 0
         self.meter.setText('CLIP' if peak >= 1 else f'{20*math.log10(peak):.1f} dBFS' if peak > 0 else '−∞ dBFS')
         self.meter.setStyleSheet('color:#f5899e' if peak >= 1 else 'color:#55d9b2')
@@ -1162,21 +1206,21 @@ class Window(QMainWindow):
     def export_dialog(self):
         if not self.project or self.job:
             return
-        folder = QFileDialog.getExistingDirectory(self, 'Destino: se creará una carpeta nueva para los stems', str(self.project.path.parent.parent))
+        folder = QFileDialog.getExistingDirectory(self, tr('Destino: se creará una carpeta nueva para los stems'), str(self.project.path.parent.parent))
         if not folder:
             return
         self.player.pause()
         fmt = 'WAV' if self.format.currentIndex() == 0 else 'FLAC'
         create_rpp = self.rpp.isChecked()
         portable, naming = self.portable_delivery, self.export_naming
-        self.status.setText(f'Exportando stems {fmt} a 24 bits…')
+        self.status.setText(tr('Exportando stems {0} a 24 bits…', fmt))
         self.start_job(lambda job: export_stems(self.project, Path(folder), fmt, job.progress.emit, job.cancel, create_rpp=create_rpp, portable=portable, naming=naming),
                        self.exported, exporting=True)
 
     def exported(self, folder):
-        self.status.setText(f'Stems guardados en {folder}')
-        QMessageBox.information(self, 'Exportación terminada',
-            f'{folder}\n\nSi activaste Crear .rpp, abre Proyecto.rpp en Reaper. También puedes importar los stems desde 00:00. Todos respetan el tramo elegido.')
+        self.status.setText(tr('Stems guardados en {0}', folder))
+        QMessageBox.information(self, tr('Exportación terminada'),
+            tr('{0}\n\nSi activaste Crear .rpp, abre Proyecto.rpp en Reaper. También puedes importar los stems desde 00:00. Todos respetan el tramo elegido.', folder))
 
     def dragEnterEvent(self, event):
         if event.mimeData().hasUrls() and not self.job:
@@ -1192,7 +1236,7 @@ class Window(QMainWindow):
 
     def closeEvent(self, event):
         if self.job:
-            self.status.setText('Espera a que termine la lectura o cancela la exportación antes de cerrar.')
+            self.status.setText(tr('Espera a que termine la lectura o cancela la exportación antes de cerrar.'))
             event.ignore()
             return
         self.save_session()

@@ -42,10 +42,20 @@ class Player:
         if status:
             self.underruns += 1
         try:
-            lo, hi = self.project.export_range if self.loop and self.project.export_range else (0, self.project.length)
-            looping = self.loop and self.project.export_range is not None
+            lo, hi = self.project.loop_range if self.loop and self.project.loop_range else (0, self.project.length)
+            if not 0 <= lo < hi <= self.project.length:
+                raise ValueError('Invalid playback range')
+            looping = self.loop
             if looping and not lo <= self.position < hi:
                 self.position = lo
+            if looping and hi-lo < frames:
+                # Render a short loop once, even for a one-sample selection.
+                block = self.renderer.mix(lo, hi-lo, self.master, self.center_mono)
+                indices = (np.arange(frames)+self.position-lo) % (hi-lo)
+                self.peak = float(np.abs(block).max(initial=0))
+                outdata[:] = np.clip(block[indices], -1, 1)
+                self.position = lo+(self.position-lo+frames) % (hi-lo)
+                return
             offset, self.peak = 0, 0.0
             while offset < frames:
                 count = min(frames-offset, hi-self.position)

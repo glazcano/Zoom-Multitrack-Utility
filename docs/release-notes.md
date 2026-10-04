@@ -1,23 +1,10 @@
-## H8 Studio 0.7.0
+## H8 Studio 0.8.0
 
-- Third view: Vertical Console, with top-to-bottom waveforms, a shared horizontal playhead, vertical faders, and meters.
-- Click or drag any vertical waveform to seek. Channel controls and playback stay synchronized across all three views.
-- Compact action menus free more space for audio. Hide the library for full-width viewing; both layout choices are remembered.
-
-Also included from 0.6.0:
-
-- New Console view: side-by-side channels with waveform previews, vertical faders, and input meters.
-- Seek from any waveform and switch between Console and Timeline without resetting playback or listening controls.
-- The last viewing mode is restored when the app opens.
-
-Also included from 0.5.0:
-
-- Find missing WAVs recursively and choose compatible matches without moving recordings.
-- Center split mono channels for monitoring, view per-track input meters, and loop the selected range.
-- Save export presets for format, channel layout, file naming, REAPER project, and portable delivery.
-- Search projects by name, folder, or notes; filter favorites and missing/unreadable projects.
-- Resume the last library, project, cursor, zoom, search, and listening settings, with playback paused.
-- Create portable delivery folders with stems, relative-path REAPER project, notes, instructions, and SHA-256 checksums.
+- Fixed looping: **Loop** works without an export selection. **A–B…** sets an independent, saved loop range; without one, the entire take repeats.
+- Amber loop markers appear in all three views. Export ranges remain independent.
+- English is now the default interface language. **About…** lets you select English or Spanish for the next launch and lists dependency, app, and system versions.
+- Short loops render once per audio callback, split L/R channels share source reads, and only the visible view repaints when its playhead or meters change.
+- Space and Home now retain their normal behavior inside text fields.
 
 Download the package for Windows x64, Fedora 43 x64, macOS Apple Silicon, or macOS Intel.
 Extract the package and keep all its contents together. Fedora requires the libraries in the platform guide.

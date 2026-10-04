@@ -15,7 +15,7 @@ from h8studio.ui import Window, STYLE
 from h8studio.core import read_project, waveform
 from h8studio.core import save_preparation
 from h8studio.preferences import Preferences
-from h8studio.dialogs import ExportOptionsDialog, LocateDialog
+from h8studio.dialogs import ExportOptionsDialog, LocateDialog, LoopDialog, AboutDialog
 
 app = QApplication([])
 app.setStyle('Fusion')
@@ -74,7 +74,7 @@ window.timeline.controls[0].setChecked(True)
 assert window.project.tracks[0].mute and not window.project.tracks[1].mute
 Path('test-output').mkdir(exist_ok=True)
 assert window.grab().save('test-output/channels-mono.png')
-next(w for w in window.timeline.controls if getattr(w, 'text', lambda: '')() == 'Estéreo').click()
+next(w for w in window.timeline.controls if getattr(w, 'text', lambda: '')() == 'Stereo').click()
 wait_job()
 assert len(window.project.tracks) == 2
 assert window.player.position == 12345
@@ -90,6 +90,34 @@ window.load(source)
 wait_job()
 assert len(window.project.tracks) == 2
 assert len(read_project(source).tracks) == 2
+# Loop is available without trimming exports. A-B edits only the loop range.
+assert window.project.export_range is None
+assert window.loop_button.isEnabled() and window.loop_range_button.isEnabled()
+def choose_loop(dialog):
+    dialog.trim.setChecked(True)
+    dialog.start.setValue(.1)
+    dialog.end.setValue(.3)
+    dialog.save()
+    return dialog.result()
+with patch.object(LoopDialog, 'exec', choose_loop):
+    window.loop_range_button.click()
+assert window.player.loop and window.project.loop_range == (4410, 13230)
+assert read_project(source).loop_range == (4410, 13230)
+assert window.project.export_range is None
+loop_editor = LoopDialog(window.project, 8820, window)
+loop_editor.show()
+app.processEvents()
+assert loop_editor.grab().save('test-output/loop-range.png')
+loop_editor.close()
+# Space and Home must keep their text-editing meanings.
+window.search.setFocus()
+app.processEvents()
+with patch.object(window.player, 'play') as play:
+    QTest.keyClicks(window.search, 'two words')
+    QTest.keyClick(window.search, Qt.Key_Home)
+    assert window.search.text() == 'two words' and window.search.cursorPosition() == 0
+    play.assert_not_called()
+window.search.clear()
 save_preparation(window.project, True, 'Acoustic guitar session', (100, 44100))
 window.refresh_preparation()
 window.search.setText('GUITAR')
@@ -171,9 +199,9 @@ window.seek(12345)
 window.tick()
 assert window.grab().save('test-output/vertical-console.png')
 # Check the compact popups expose their original controls.
-for text, widgets in [('Proyecto', (window.rename_button, window.prepare_button, window.locate_button)),
-                      ('Exportación', (window.format, window.rpp, window.options_button)),
-                      ('Canales al abrir / lote', (window.channel_mode, window.channels_batch_button))]:
+for text, widgets in [('Project', (window.rename_button, window.prepare_button, window.locate_button)),
+                      ('Export', (window.format, window.rpp, window.options_button)),
+                      ('Open / batch channels', (window.channel_mode, window.channels_batch_button))]:
     if text.startswith('Canales'):
         window.library_toggle.setChecked(True)
     button = next(b for b in window.findChildren(QToolButton) if b.text() == text)
@@ -243,5 +271,32 @@ app.processEvents()
 Path('test-output').mkdir(exist_ok=True)
 assert window.grab().save('test-output/app.png')
 window.close()
+# About shows runtime dependencies and saves language for the next launch.
+assert window.about_button.text() == 'About…'
+about = AboutDialog(window.preferences)
+about.show()
+app.processEvents()
+from PySide6.QtWidgets import QPlainTextEdit, QDialogButtonBox
+assert all(name in about.findChild(QPlainTextEdit).toPlainText() for name in ('PySide6', 'NumPy', 'SoundFile', 'PortAudio', 'Python'))
+assert about.grab().save('test-output/about-en.png')
+about.languages.setCurrentIndex(1)
+about.save()
+assert Preferences(window.preferences.path).data['language'] == 'es'
+# Clear session so this language check does not asynchronously reopen audio.
+window.preferences.data['session'] = {}
+window.preferences.save()
+spanish = Window(state_path=window.preferences.path)
+assert spanish.about_button.text() == 'Acerca de…'
+assert spanish.play_button.text() == '▶  Reproducir'
+spanish_about = AboutDialog(spanish.preferences, spanish)
+assert spanish_about.windowTitle() == 'Acerca de H8 Studio'
+assert spanish_about.findChild(QDialogButtonBox).button(QDialogButtonBox.Save).text() == 'Guardar'
+spanish_about.show()
+app.processEvents()
+assert spanish_about.grab().save('test-output/about-es.png')
+spanish_about.reject()
+spanish.close()
+from h8studio.i18n import set_language
+set_language('en')
 temporary.cleanup()
 print('UI passed: three synced views, vertical seeking/faders, compact layout, library visibility, stereo/mono, presets, session restore, relinking, screenshots.')

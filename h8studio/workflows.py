@@ -1,3 +1,4 @@
+from .i18n import tr
 from pathlib import Path
 import json
 import math
@@ -29,17 +30,17 @@ def read_templates(path):
     try:
         data = json.loads(Path(path).read_text(encoding='utf-8'))
         if not isinstance(data, dict):
-            raise ValueError('Formato inválido')
+            raise ValueError(tr('Formato inválido'))
         for name, mapping in data.items():
             validate_title(name)
             if not isinstance(mapping, dict):
-                raise ValueError('Asignaciones inválidas')
+                raise ValueError(tr('Asignaciones inválidas'))
             for key, value in mapping.items():
                 validate_title(key)
                 validate_title(value)
         return data
     except (ValueError, OSError) as exc:
-        raise ProjectError(f'No se pueden leer las plantillas: {exc}') from exc
+        raise ProjectError(tr('No se pueden leer las plantillas: {0}', exc)) from exc
 
 
 def apply_template(project, mapping):
@@ -55,7 +56,7 @@ def apply_template(project, mapping):
             updates.append((track, mapping[key]))
             labels[track_key(track)] = mapping[key]
     if not updates:
-        raise ProjectError('La plantilla no coincide con las entradas de este proyecto.')
+        raise ProjectError(tr('La plantilla no coincide con las entradas de este proyecto.'))
     save_settings(project, data)
     for track, label in updates:
         track.name = label
@@ -69,7 +70,7 @@ def analyze_project(project, cancel=None, progress=None):
         for index, track in enumerate(project.tracks):
             missing = [c.path.name for c in track.clips if c.missing]
             if missing:
-                rows.append(f'{track.name}: FALTA AUDIO: {", ".join(missing)}')
+                rows.append(tr('{0}: FALTA AUDIO: {1}', track.name, ', '.join(missing)))
                 continue
             peak, energy, count, near_full = 0., 0., 0, 0
             for start in range(0, project.length, 65536):
@@ -86,22 +87,22 @@ def analyze_project(project, cancel=None, progress=None):
             rms = 10*math.log10(energy/count) if energy and count else None
             flags = []
             if peak == 0:
-                flags.append('silencio digital')
+                flags.append(tr('silencio digital'))
             elif rms is not None and rms < -60:
-                flags.append('nivel medio muy bajo (< −60 dBFS)')
+                flags.append(tr('nivel medio muy bajo (< −60 dBFS)'))
             if near_full:
-                flags.append(f'posible saturación: {near_full} muestras ≥ −0,1 dBFS')
+                flags.append(tr('posible saturación: {0} muestras ≥ −0,1 dBFS', near_full))
             level = f'{db:.1f} dBFS' if db is not None else '−∞ dBFS'
-            rows.append(f'{track.name}: pico {level}; ' + ('; '.join(flags) or 'sin alertas de nivel'))
+            rows.append(tr('{0}: pico {1}; ', track.name, level) + ('; '.join(flags) or tr('sin alertas de nivel')))
     finally:
         renderer.close()
-    return rows + ['\nObservaciones de importación:'] + project.warnings
+    return rows + [tr('\nObservaciones de importación:')] + project.warnings
 
 
 def export_batch(paths, parent, fmt='WAV', create_rpp=True, progress=None, cancel=None, split_stereo=None, portable=False, naming='track'):
     paths = list(dict.fromkeys(str(Path(p).resolve()) for p in paths))
     if not paths:
-        raise ProjectError('Marca al menos un proyecto para exportar.')
+        raise ProjectError(tr('Marca al menos un proyecto para exportar.'))
     parent = Path(parent).resolve()
     parent.mkdir(parents=True, exist_ok=True)
     report_path = Path(tempfile.mkdtemp(prefix='Lote_', dir=parent))

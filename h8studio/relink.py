@@ -1,4 +1,5 @@
 """Find compatible missing media; associations require an explicit selection."""
+from .i18n import tr
 from pathlib import Path
 import os
 import soundfile as sf
@@ -34,7 +35,7 @@ def find_candidates(project, folder, cancel=None):
             try:
                 if compatible(project, missing[key], path):
                     stamp = bwf_reference(path)
-                    results[key].append(dict(path=str(path), bwf=str(stamp) if stamp else 'Sin BWF'))
+                    results[key].append(dict(path=str(path), bwf=str(stamp) if stamp else tr('Sin BWF')))
             except (RuntimeError, OSError, ValueError):
                 continue
     return results
@@ -47,7 +48,7 @@ def link_media(project, selections):
     for key, value in selections.items():
         path = Path(value).resolve()
         if key not in missing or not compatible(project, missing[key], path):
-            raise ProjectError(f'{path.name}: el WAV ya no coincide en nombre, duración, canales o frecuencia.')
+            raise ProjectError(tr('{0}: el WAV ya no coincide en nombre, duración, canales o frecuencia.', path.name))
         try:
             links[key] = str(path.relative_to(project.path.parent))
         except ValueError:
