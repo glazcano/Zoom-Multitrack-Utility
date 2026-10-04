@@ -8,7 +8,7 @@ from PySide6.QtCore import Qt, QThread, Signal, QTimer, QRectF, QEvent, QStandar
 from PySide6.QtGui import QColor, QPainter, QPen, QFont, QKeySequence, QShortcut, QFontDatabase
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QFileDialog, QListWidget, QListWidgetItem, QSplitter, QScrollArea,
-    QSlider, QCheckBox, QComboBox, QMessageBox, QProgressBar, QInputDialog, QLineEdit)
+    QSlider, QCheckBox, QComboBox, QMessageBox, QProgressBar, QInputDialog, QLineEdit, QStackedWidget)
 
 from .core import read_project, waveform, export_stems, ExportCancelled, rename_project, rename_track, title_settings, ProjectError, set_stereo_split
 from .audio import Player
@@ -198,6 +198,147 @@ class Timeline(QWidget):
         p.end()
 
 
+class Console(Timeline):
+    """One strip per track, with a seekable waveform above a vertical fader."""
+    COLUMN = 240
+    WAVE_TOP, WAVE_BOTTOM = 76, 166
+
+    def __init__(self):
+        super().__init__()
+        self.strips = []
+        self.setMinimumSize(240, 360)
+
+    def set_project(self, project, peaks):
+        self.project, self.peaks = project, peaks
+        for widget in self.controls:
+            widget.hide()
+            widget.deleteLater()
+        self.controls.clear()
+        self.strips.clear()
+        for i, track in enumerate(project.tracks):
+            mute, solo = QCheckBox('Mute', self), QCheckBox('Solo', self)
+            mute.setChecked(track.mute)
+            solo.setChecked(track.solo)
+            mute.toggled.connect(lambda value, t=track: setattr(t, 'mute', value))
+            solo.toggled.connect(lambda value, t=track: setattr(t, 'solo', value))
+            fader = QSlider(Qt.Vertical, self)
+            fader.setRange(-600, 60)
+            fader.setValue(round(200*math.log10(max(track.gain, .001))))
+            fader.setToolTip('Volumen de escucha; no modifica los stems. Arriba: +6 dB; abajo: −60 dB.')
+            value = QLabel(f'{fader.value()/10:.1f} dB', self)
+            value.setAlignment(Qt.AlignCenter)
+            def change(v, t=track, label=value):
+                t.gain = 10**(v/200)
+                label.setText(f'{v/10:.1f} dB')
+            fader.valueChanged.connect(change)
+            rename = QPushButton('Nombre…', self)
+            rename.clicked.connect(lambda checked=False, index=i: self.rename_requested.emit(index))
+            channels = QPushButton('2 mono' if track.channels == 2 else 'Estéreo', self)
+            channels.setEnabled(track.channels == 2 or track.output_channel is not None)
+            channels.clicked.connect(lambda checked=False, index=i: self.split_requested.emit(index))
+            for w in (rename, channels):
+                w.setStyleSheet('padding:4px;font-size:11px;')
+            strip = (mute, solo, fader, value, rename, channels)
+            self.strips.append(strip)
+            self.controls.extend(strip)
+            for widget in strip:
+                widget.show()
+        self.setMinimumWidth(max(240, len(project.tracks)*self.COLUMN))
+        self.layout_strips()
+        self.update()
+
+    def layout_strips(self):
+        for i, (mute, solo, fader, value, rename, channels) in enumerate(self.strips):
+            x = i*self.COLUMN
+            rename.setGeometry(x+14, 40, 92, 28)
+            channels.setGeometry(x+130, 40, 96, 28)
+            mute.setGeometry(x+28, 190, 80, 28)
+            solo.setGeometry(x+135, 190, 80, 28)
+            fader.setGeometry(x+66, 234, 32, self.height()-282)
+            value.setGeometry(x+24, self.height()-32, 116, 25)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self.layout_strips()
+
+    def seek_at(self, point):
+        if not self.project or not self.WAVE_TOP <= point.y() <= self.WAVE_BOTTOM:
+            return
+        index = int(point.x()//self.COLUMN)
+        if not 0 <= index < len(self.project.tracks):
+            return
+        offset = point.x()-index*self.COLUMN-14
+        if 0 <= offset <= self.COLUMN-28:
+            self.seek.emit(round(offset/(self.COLUMN-28)*self.project.length))
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self.seek_at(event.position())
+
+    def mouseMoveEvent(self, event):
+        if event.buttons() & Qt.LeftButton:
+            self.seek_at(event.position())
+
+    def paintEvent(self, event):
+        if not self.project:
+            return super().paintEvent(event)
+        p = QPainter(self)
+        p.fillRect(self.rect(), QColor('#111720'))
+        duration = max(1, self.project.length)
+        width = self.COLUMN-28
+        for i, track in enumerate(self.project.tracks):
+            x, color = i*self.COLUMN, QColor(COLORS[i%len(COLORS)])
+            p.fillRect(QRectF(x+4, 4, self.COLUMN-8, self.height()-8), QColor('#1a2330'))
+            p.fillRect(QRectF(x+4, 4, self.COLUMN-8, 3), color)
+            p.setFont(QFont(QApplication.font().family(), 11, QFont.DemiBold))
+            p.setPen(QColor('#eef4fb'))
+            p.drawText(x+14, 28, p.fontMetrics().elidedText(track.name, Qt.ElideRight, width))
+            p.setFont(QFont(QApplication.font().family(), 8))
+            wave_rect = QRectF(x+14, self.WAVE_TOP, width, self.WAVE_BOTTOM-self.WAVE_TOP)
+            p.fillRect(wave_rect, QColor('#111720'))
+            p.save()
+            p.setClipRect(wave_rect)
+            for clip in track.clips:
+                start = x+14+clip.start/duration*width
+                end = x+14+(clip.start+clip.frames)/duration*width
+                rect = QRectF(start, self.WAVE_TOP, max(1, end-start), wave_rect.height())
+                p.fillRect(rect, QColor('#482b35') if clip.missing else QColor('#223d40'))
+                p.setPen(QColor('#ed8795') if clip.missing else color)
+                p.drawText(QRectF(start+4, self.WAVE_TOP+4, max(1, end-start-8), 22), Qt.AlignLeft,
+                           'FALTA AUDIO' if clip.missing else clip.path.name)
+                peaks = self.peaks.get((str(clip.path), clip.channel))
+                if peaks is None:
+                    peaks = self.peaks.get(str(clip.path))
+                if peaks is not None and len(peaks):
+                    pixels = max(1, min(len(peaks), int(end-start)))
+                    for pixel in range(pixels):
+                        lo, hi = pixel*len(peaks)//pixels, (pixel+1)*len(peaks)//pixels
+                        group = peaks[lo:hi]
+                        xx = int(start+pixel*(end-start)/pixels)
+                        p.drawLine(xx, int(134-group[:, 1].max()*25), xx, int(134-group[:, 0].min()*25))
+            if self.project.export_range:
+                a, b = self.project.export_range
+                p.fillRect(QRectF(x+14+a/duration*width, self.WAVE_TOP, (b-a)/duration*width, 4), color)
+            cursor = int(x+14+self.position/duration*width)
+            p.setPen(QPen(QColor('#fff0c2'), 2))
+            p.drawLine(cursor, self.WAVE_TOP, cursor, self.WAVE_BOTTOM)
+            p.restore()
+            p.setPen(QColor('#8fa0b5'))
+            p.drawText(x+14, 182, '0:00')
+            p.drawText(QRectF(x+80, 166, width-66, 20), Qt.AlignRight, clock_text(self.project.length/self.project.rate))
+            peak = self.meter_values[i] if i < len(self.meter_values) else 0
+            db = 20*math.log10(peak) if peak else -90
+            height = self.height()-282
+            p.fillRect(QRectF(x+148, 234, 18, height), QColor('#34465d'))
+            fill = height*max(0, min(1, (db+60)/60))
+            p.fillRect(QRectF(x+148, 234+height-fill, 18, fill), QColor('#f5899e' if peak >= 1 else '#55d9b2'))
+            p.setPen(QColor('#8fa0b5'))
+            for level in (0, -12, -24, -36, -48, -60):
+                p.drawText(x+174, int(238-level/60*height), str(level))
+            p.drawText(QRectF(x+134, self.height()-32, 95, 25), Qt.AlignCenter, f'{db:.1f} dBFS' if peak else '−∞ dBFS')
+        p.end()
+
+
 class Window(QMainWindow):
     def __init__(self, initial=None, state_path=None):
         super().__init__()
@@ -331,6 +472,10 @@ class Window(QMainWindow):
         self.loop_button.toggled.connect(lambda value: setattr(self.player, 'loop', value))
         toolbar.addWidget(self.loop_button)
         toolbar.addStretch()
+        self.view_mode = QComboBox()
+        self.view_mode.addItems(['Línea de tiempo', 'Consola'])
+        self.view_mode.currentIndexChanged.connect(self.change_view)
+        toolbar.addWidget(self.view_mode)
         toolbar.addWidget(QLabel('Zoom'))
         self.zoom = QComboBox()
         self.zoom.addItems(['Ajustar', '2×', '4×', '8×'])
@@ -344,7 +489,17 @@ class Window(QMainWindow):
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
         self.scroll.setWidget(self.timeline)
-        ml.addWidget(self.scroll, 1)
+        self.console = Console()
+        self.console.seek.connect(self.seek)
+        self.console.rename_requested.connect(self.rename_track_dialog)
+        self.console.split_requested.connect(self.toggle_channels)
+        self.console_scroll = QScrollArea()
+        self.console_scroll.setWidgetResizable(True)
+        self.console_scroll.setWidget(self.console)
+        self.views = QStackedWidget()
+        self.views.addWidget(self.scroll)
+        self.views.addWidget(self.console_scroll)
+        ml.addWidget(self.views, 1)
         bottom = QHBoxLayout()
         bottom.addWidget(QLabel('Escucha'))
         self.master = QSlider(Qt.Horizontal)
@@ -441,6 +596,8 @@ class Window(QMainWindow):
         self.channels_batch_button.setEnabled(not busy)
         self.channel_mode.setEnabled(not busy)
         self.timeline.setEnabled(not busy)
+        self.console.setEnabled(not busy)
+        self.view_mode.setEnabled(not busy)
         self.rename_button.setEnabled(not busy and self.project is not None)
         for w in (self.open_button, self.folder_button, self.library, self.search, self.library_filter):
             w.setEnabled(not busy)
@@ -476,7 +633,7 @@ class Window(QMainWindow):
             self.apply_export_options(self.preferences.data.get('export', {}))
         except ProjectError:
             self.apply_export_options({})
-        for key, widget, minimum, maximum in [('zoom', self.zoom, 0, 3), ('filter', self.library_filter, 0, 2)]:
+        for key, widget, minimum, maximum in [('zoom', self.zoom, 0, 3), ('filter', self.library_filter, 0, 2), ('view', self.view_mode, 0, 1)]:
             value = self.session.get(key, 0)
             widget.setCurrentIndex(value if type(value) is int and minimum <= value <= maximum else 0)
         query = self.session.get('search', '')
@@ -490,6 +647,7 @@ class Window(QMainWindow):
             library=str(self.library_root or (self.project.path.parent if self.project else '')),
             project=str(self.project.path) if self.project else '', position=self.player.position,
             zoom=self.zoom.currentIndex(), search=self.search.text(), filter=self.library_filter.currentIndex(),
+            view=self.view_mode.currentIndex(),
             center_mono=self.center_mono.isChecked(), master=self.master.value())
         self.preferences.data['export'] = self.current_export_options()
         try:
@@ -785,6 +943,7 @@ class Window(QMainWindow):
         self.subtitle.setText(f'{len(project.tracks)} pistas  ·  {project.rate/1000:g} kHz  ·  {clock_text(project.length/project.rate)}  ·  {project.alignment}')
         self.notice.setText('\n'.join(project.warnings))
         self.timeline.set_project(project, peaks)
+        self.console.set_project(project, peaks)
         self.refresh_preparation()
         self.status.setText('Proyecto abierto · clic en la línea de tiempo para mover el cursor · Espacio para reproducir')
         self.resize_timeline()
@@ -827,6 +986,18 @@ class Window(QMainWindow):
         self.refresh_preparation()
         self.status.setText(f'Pista guardada: {track.name}. Los stems usarán esta etiqueta.')
 
+    def change_view(self, index):
+        if not hasattr(self, 'views'):
+            return
+        self.views.setCurrentIndex(index)
+        self.zoom.setEnabled(index == 0)
+        if self.project:
+            view = self.console if index else self.timeline
+            view.set_project(self.project, self.timeline.peaks)
+            view.position = self.player.position
+            view.meter_values = [t.peak if self.player.playing else 0 for t in self.project.tracks]
+        self.resize_timeline()
+
     def resize_timeline(self, *_):
         self.timeline.setMinimumWidth(max(650, self.scroll.viewport().width())*(2**self.zoom.currentIndex()))
 
@@ -864,6 +1035,9 @@ class Window(QMainWindow):
             self.timeline.position = self.player.position
             self.timeline.meter_values = [t.peak if self.player.playing else 0 for t in self.project.tracks]
             self.timeline.update()
+            self.console.position = self.player.position
+            self.console.meter_values = self.timeline.meter_values
+            self.console.update()
         peak = self.player.peak if self.player.playing else 0
         self.meter.setText('CLIP' if peak >= 1 else f'{20*math.log10(peak):.1f} dBFS' if peak > 0 else '−∞ dBFS')
         self.meter.setStyleSheet('color:#f5899e' if peak >= 1 else 'color:#55d9b2')
@@ -929,6 +1103,9 @@ QComboBox { background:#273548; border:1px solid #35465b; padding:8px; border-ra
 QSlider::groove:horizontal { height:4px; background:#34465d; border-radius:2px; }
 QSlider::handle:horizontal { width:12px; margin:-4px 0; background:#b9cfe5; border-radius:6px; }
 QSlider::sub-page:horizontal { background:#55d9b2; }
+QSlider::groove:vertical { width:6px; background:#34465d; border-radius:3px; }
+QSlider::handle:vertical { height:18px; margin:0 -10px; background:#b9cfe5; border-radius:4px; }
+QSlider::add-page:vertical { background:#55d9b2; }
 QCheckBox { background:transparent; }
 QCheckBox::indicator { width:15px; height:15px; border:1px solid #53677f; border-radius:3px; background:#17202b; }
 QCheckBox::indicator:checked { background:#55d9b2; }

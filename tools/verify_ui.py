@@ -7,6 +7,8 @@ import shutil
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from PySide6.QtWidgets import QApplication
 from PySide6.QtCore import Qt
+from PySide6.QtCore import QPoint
+from PySide6.QtTest import QTest
 from unittest.mock import patch
 from h8studio.ui import Window, STYLE
 from h8studio.core import read_project, waveform
@@ -112,6 +114,33 @@ window.apply_export_options(dialog.options())
 assert window.preferences.presets()['Portable FLAC']['portable']
 window.seek(12345)
 window.zoom.setCurrentIndex(1)
+renderer = window.player.renderer
+window.view_mode.setCurrentIndex(1)
+app.processEvents()
+assert window.views.currentWidget() is window.console_scroll
+assert not window.zoom.isEnabled()
+assert window.player.renderer is renderer and window.player.position == 12345
+mute, solo, fader, value, _, _ = window.console.strips[0]
+assert fader.orientation() == Qt.Vertical
+fader.setValue(-120)
+mute.setChecked(True)
+assert abs(window.project.tracks[0].gain-10**(-.6)) < 1e-10
+assert window.project.tracks[0].mute
+QTest.mouseClick(window.console, Qt.LeftButton, pos=QPoint(120, 150))
+assert abs(window.player.position-window.project.length//2) <= 1
+position = window.player.position
+window.view_mode.setCurrentIndex(0)
+assert window.timeline.controls[0].isChecked()
+assert window.timeline.controls[2].value() == -120
+assert window.player.position == position and window.player.renderer is renderer
+window.timeline.controls[0].setChecked(False)
+window.view_mode.setCurrentIndex(1)
+assert not window.console.strips[0][0].isChecked()
+assert window.console.strips[0][2].value() == -120
+window.seek(12345)
+app.processEvents()
+window.tick()
+assert window.grab().save('test-output/console.png')
 window.close()
 window = Window(state_path=Path(temporary.name)/'app-settings.json')
 window.show()
@@ -121,6 +150,7 @@ while (window.project is None or window.job) and time.monotonic() < deadline:
     time.sleep(.01)
 assert window.project and window.player.position == 12345
 assert window.zoom.currentIndex() == 1
+assert window.view_mode.currentIndex() == 1
 assert window.center_mono.isChecked() and not window.player.playing
 assert window.format.currentIndex() == 1 and window.portable_delivery
 assert window.preferences.presets()['Portable FLAC']['format'] == 'FLAC'
@@ -145,9 +175,16 @@ with patch('h8studio.ui.QFileDialog.getExistingDirectory', return_value=str(reco
         time.sleep(.01)
 assert not window.job and not window.project.tracks[0].clips[0].missing
 assert not window.locate_button.isEnabled()
+window.console.strips[0][5].click()
+wait_job()
+assert len(window.console.strips) == 3 and window.view_mode.currentIndex() == 1
+window.console.strips[0][5].click()
+wait_job()
+assert len(window.console.strips) == 2 and window.view_mode.currentIndex() == 1
 window.zoom.setCurrentIndex(0)
 window.loop_button.setChecked(True)
 window.timeline.meter_values = [.2, .08]
+window.console.meter_values = [.2, .08]
 app.processEvents()
 Path('test-output').mkdir(exist_ok=True)
 assert window.grab().save('test-output/app.png')

@@ -14,6 +14,8 @@ Open `.h8prj` projects, listen to their tracks, and export aligned WAV or FLAC s
 
 The interface currently uses Spanish labels.
 
+Switch **Línea de tiempo / Consola** to choose your layout. Console view places channels side by side, with a seekable waveform above each vertical fader and input meter. Click any waveform to move the shared playhead. Mute, solo, gain, names, and stereo/mono controls remain available; switching views keeps playback and settings intact. The chosen view is remembered on the next launch. Timeline zoom applies to the timeline view; console waveforms show the full take.
+
 ## Prepare your takes
 
 - **Names and templates:** rename projects and instruments, or save reusable input-to-instrument mappings.

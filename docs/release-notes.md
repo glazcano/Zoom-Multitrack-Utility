@@ -1,4 +1,10 @@
-## H8 Studio 0.5.0
+## H8 Studio 0.6.0
+
+- New Console view: side-by-side channels with waveform previews, vertical faders, and input meters.
+- Seek from any waveform and switch between Console and Timeline without resetting playback or listening controls.
+- The last viewing mode is restored when the app opens.
+
+Also included from 0.5.0:
 
 - Find missing WAVs recursively and choose compatible matches without moving recordings.
 - Center split mono channels for monitoring, view per-track input meters, and loop the selected range.
