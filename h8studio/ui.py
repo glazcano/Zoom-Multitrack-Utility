@@ -8,7 +8,8 @@ from PySide6.QtCore import Qt, QThread, Signal, QTimer, QRectF, QEvent, QStandar
 from PySide6.QtGui import QColor, QPainter, QPen, QFont, QKeySequence, QShortcut, QFontDatabase
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QFileDialog, QListWidget, QListWidgetItem, QSplitter, QScrollArea,
-    QSlider, QCheckBox, QComboBox, QMessageBox, QProgressBar, QInputDialog, QLineEdit, QStackedWidget)
+    QSlider, QCheckBox, QComboBox, QMessageBox, QProgressBar, QInputDialog, QLineEdit, QStackedWidget,
+    QToolButton, QMenu, QWidgetAction, QSizePolicy)
 
 from .core import read_project, waveform, export_stems, ExportCancelled, rename_project, rename_track, title_settings, ProjectError, set_stereo_split
 from .audio import Player
@@ -339,6 +340,110 @@ class Console(Timeline):
         p.end()
 
 
+class VerticalConsole(Console):
+    """Shared sample timeline running down each channel strip."""
+    def wave_rect(self, index):
+        return QRectF(index*self.COLUMN+14, 114, 118, max(1, self.height()-148))
+
+    def layout_strips(self):
+        for i, (mute, solo, fader, value, rename, channels) in enumerate(self.strips):
+            x = i*self.COLUMN
+            rename.setGeometry(x+14, 34, 92, 25)
+            channels.setGeometry(x+130, 34, 96, 25)
+            mute.setGeometry(x+16, 62, 84, 26)
+            solo.setGeometry(x+132, 62, 84, 26)
+            fader.setGeometry(x+145, 114, 30, self.height()-186)
+            value.setGeometry(x+136, self.height()-59, 96, 24)
+
+    def seek_at(self, point):
+        if not self.project:
+            return
+        index = int(point.x()//self.COLUMN)
+        if 0 <= index < len(self.project.tracks):
+            rect = self.wave_rect(index)
+            if rect.contains(point):
+                fraction = (point.y()-rect.top())/rect.height()
+                self.seek.emit(round(fraction*self.project.length))
+
+    def paintEvent(self, event):
+        if not self.project:
+            return Timeline.paintEvent(self, event)
+        p = QPainter(self)
+        p.fillRect(self.rect(), QColor('#111720'))
+        duration = max(1, self.project.length)
+        for i, track in enumerate(self.project.tracks):
+            x, color = i*self.COLUMN, QColor(COLORS[i%len(COLORS)])
+            rect = self.wave_rect(i)
+            p.fillRect(QRectF(x+4, 4, self.COLUMN-8, self.height()-8), QColor('#1a2330'))
+            p.fillRect(QRectF(x+4, 4, self.COLUMN-8, 3), color)
+            p.setFont(QFont(QApplication.font().family(), 11, QFont.DemiBold))
+            p.setPen(QColor('#eef4fb'))
+            p.drawText(x+14, 27, p.fontMetrics().elidedText(track.name, Qt.ElideRight, self.COLUMN-28))
+            p.setFont(QFont(QApplication.font().family(), 8))
+            p.setPen(QColor('#8fa0b5'))
+            p.drawText(x+14, 106, '0:00  ↓ tiempo')
+            p.drawText(QRectF(x+14, self.height()-28, 120, 22), Qt.AlignLeft, clock_text(self.project.length/self.project.rate))
+            p.fillRect(rect, QColor('#111720'))
+            p.save()
+            p.setClipRect(rect)
+            for clip in track.clips:
+                start = rect.top()+clip.start/duration*rect.height()
+                end = rect.top()+(clip.start+clip.frames)/duration*rect.height()
+                p.fillRect(QRectF(rect.left(), start, rect.width(), max(1, end-start)),
+                           QColor('#482b35') if clip.missing else QColor('#223d40'))
+                p.setPen(QColor('#ed8795') if clip.missing else color)
+                peaks = self.peaks.get((str(clip.path), clip.channel))
+                if peaks is None:
+                    peaks = self.peaks.get(str(clip.path))
+                if peaks is not None and len(peaks):
+                    pixels = max(1, min(len(peaks), int(end-start)))
+                    for pixel in range(pixels):
+                        lo, hi = pixel*len(peaks)//pixels, (pixel+1)*len(peaks)//pixels
+                        group = peaks[lo:hi]
+                        yy = int(start+pixel*(end-start)/pixels)
+                        center = rect.center().x()
+                        p.drawLine(int(center+group[:, 0].min()*50), yy, int(center+group[:, 1].max()*50), yy)
+                if clip.missing:
+                    p.drawText(QRectF(rect.left()+4, start+4, rect.width()-8, 36), Qt.TextWordWrap, 'FALTA AUDIO')
+            if self.project.export_range:
+                a, b = self.project.export_range
+                p.fillRect(QRectF(rect.left(), rect.top()+a/duration*rect.height(), 4, (b-a)/duration*rect.height()), color)
+            p.setPen(QPen(QColor('#8fa0b5'), 1, Qt.DotLine))
+            for fraction in (.25, .5, .75):
+                yy = int(rect.top()+rect.height()*fraction)
+                p.drawLine(int(rect.left()), yy, int(rect.right()), yy)
+            cursor = int(rect.top()+self.position/duration*rect.height())
+            p.setPen(QPen(QColor('#fff0c2'), 2))
+            p.drawLine(int(rect.left()), cursor, int(rect.right()), cursor)
+            p.restore()
+            peak = self.meter_values[i] if i < len(self.meter_values) else 0
+            db = 20*math.log10(peak) if peak else -90
+            height = self.height()-186
+            p.fillRect(QRectF(x+188, 114, 12, height), QColor('#34465d'))
+            fill = height*max(0, min(1, (db+60)/60))
+            p.fillRect(QRectF(x+188, 114+height-fill, 12, fill), QColor('#f5899e' if peak >= 1 else '#55d9b2'))
+            p.setPen(QColor('#8fa0b5'))
+            for level in (0, -12, -24, -36, -48, -60):
+                p.drawText(x+204, int(118-level/60*height), str(level))
+            p.drawText(QRectF(x+136, self.height()-30, 96, 24), Qt.AlignCenter, f'{db:.1f} dBFS' if peak else '−∞ dBFS')
+        p.end()
+
+
+def compact_menu(label, widgets, parent):
+    button = QToolButton(parent)
+    button.setText(label)
+    button.setPopupMode(QToolButton.InstantPopup)
+    menu = QMenu(button)
+    for widget in widgets:
+        action = QWidgetAction(menu)
+        action.setDefaultWidget(widget)
+        menu.addAction(action)
+        if isinstance(widget, QPushButton):
+            widget.clicked.connect(menu.close)
+    button.setMenu(menu)
+    return button
+
+
 class Window(QMainWindow):
     def __init__(self, initial=None, state_path=None):
         super().__init__()
@@ -363,25 +468,28 @@ class Window(QMainWindow):
         root = QWidget()
         self.setCentralWidget(root)
         layout = QVBoxLayout(root)
-        layout.setContentsMargins(24, 18, 24, 16)
+        layout.setContentsMargins(10, 8, 10, 8)
+        layout.setSpacing(4)
         heading = QHBoxLayout()
         brand = QLabel('H8 <span style="color:#55d9b2">STUDIO</span>')
-        brand.setStyleSheet('font-size:25px;font-weight:700')
+        brand.setStyleSheet('font-size:18px;font-weight:700')
         heading.addWidget(brand)
-        heading.addWidget(QLabel('  /  Reproductor y stems para Reaper'))
+        self.library_toggle = QCheckBox('Biblioteca')
+        self.library_toggle.setChecked(True)
+        heading.addWidget(self.library_toggle)
         heading.addStretch()
         self.open_button = QPushButton('Abrir proyecto…')
         self.folder_button = QPushButton('Explorar carpeta…')
         self.open_button.clicked.connect(self.open_dialog)
         self.folder_button.clicked.connect(self.folder_dialog)
-        heading.addWidget(self.folder_button)
-        heading.addWidget(self.open_button)
+        heading.addWidget(compact_menu('Abrir', (self.open_button, self.folder_button), self))
         layout.addLayout(heading)
-        layout.addSpacing(12)
         split = QSplitter()
         side = QWidget()
         sl = QVBoxLayout(side)
-        sl.setContentsMargins(0, 0, 14, 0)
+        sl.setContentsMargins(0, 0, 6, 0)
+        sl.setSpacing(4)
+        self.library_toggle.toggled.connect(side.setVisible)
         self.library_label = QLabel('PROYECTOS')
         sl.addWidget(self.library_label)
         self.search = QLineEdit()
@@ -404,40 +512,36 @@ class Window(QMainWindow):
             button.clicked.connect(lambda checked=False, value=mode: self.check_projects(value))
             selection.addWidget(button)
         sl.addLayout(selection)
-        channel_label = QLabel('CANALES AL ABRIR / EXPORTAR LOTE')
-        channel_label.setWordWrap(True)
-        sl.addWidget(channel_label)
         self.channel_mode = QComboBox()
         self.channel_mode.addItems(['Usar elección guardada', 'Una pista estéreo', 'Dos pistas mono (L/R)'])
         self.channel_mode.setToolTip('Al abrir guarda la elección. Al exportar un lote solo cambia esa exportación.')
-        sl.addWidget(self.channel_mode)
         self.channels_batch_button = QPushButton('Aplicar canales al lote')
         self.channels_batch_button.clicked.connect(self.channels_batch)
-        sl.addWidget(self.channels_batch_button)
+        sl.addWidget(compact_menu('Canales al abrir / lote', (self.channel_mode, self.channels_batch_button), self))
         self.batch_button = QPushButton('Exportar lote marcado…')
         self.batch_button.clicked.connect(self.batch_dialog)
         sl.addWidget(self.batch_button)
-        hint = QLabel('Doble clic para abrir una toma.\nEl lote usa las casillas visibles.\n\nLos originales no se modifican.')
+        hint = QLabel('Doble clic: abrir · casillas: lote')
+        hint.setWordWrap(True)
         hint.setStyleSheet('color:#8fa0b5;font-size:12px')
         sl.addWidget(hint)
         split.addWidget(side)
         main = QWidget()
         ml = QVBoxLayout(main)
-        ml.setContentsMargins(10, 0, 0, 0)
+        ml.setContentsMargins(4, 0, 0, 0)
+        ml.setSpacing(4)
         self.title = QLabel('Tu grabación, lista para continuar.')
         self.title.setTextFormat(Qt.PlainText)
-        self.title.setWordWrap(True)
-        self.title.setStyleSheet('font-size:23px;font-weight:600')
+        self.title.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        self.title.setStyleSheet('font-size:18px;font-weight:600')
         self.subtitle = QLabel('Abre un archivo .h8prj con sus WAV en la misma carpeta.')
         self.subtitle.setStyleSheet('color:#9eafc3')
         title_row = QHBoxLayout()
         title_row.addWidget(self.title, 1)
         self.rename_button = QPushButton('Cambiar título…')
         self.rename_button.clicked.connect(self.rename_dialog)
-        title_row.addWidget(self.rename_button)
         ml.addLayout(title_row)
         ml.addWidget(self.subtitle)
-        preparation = QHBoxLayout()
         self.prepare_button = QPushButton('Favorita, notas y tramo…')
         self.prepare_button.clicked.connect(self.prepare_dialog)
         self.templates_button = QPushButton('Plantillas…')
@@ -446,16 +550,12 @@ class Window(QMainWindow):
         self.problems_button.clicked.connect(self.problems_dialog)
         self.locate_button = QPushButton('Localizar WAV…')
         self.locate_button.clicked.connect(self.locate_dialog)
-        for button in (self.prepare_button, self.templates_button, self.problems_button):
-            preparation.addWidget(button)
-        preparation.addStretch()
-        preparation.addWidget(self.locate_button)
-        ml.addLayout(preparation)
-        self.notice = QLabel('Compatible con las tomas completas H8 v001 analizadas. Las ediciones MUSIC requieren validación adicional.')
-        self.notice.setWordWrap(True)
-        self.notice.setMaximumHeight(85)
-        self.notice.setStyleSheet('background:#202c3b;color:#c6d5e7;padding:10px;border-radius:6px;')
-        ml.addWidget(self.notice)
+        title_row.addWidget(compact_menu('Proyecto', (self.rename_button, self.prepare_button,
+            self.templates_button, self.problems_button, self.locate_button), self))
+        self.notice = QPushButton('Avisos')
+        self.notice.setEnabled(False)
+        self.notice.clicked.connect(lambda: show_report(self, 'Observaciones del proyecto', '\n'.join(self.project.warnings)) if self.project else None)
+        title_row.addWidget(self.notice)
         toolbar = QHBoxLayout()
         self.play_button = QPushButton('▶  Reproducir')
         self.stop_button = QPushButton('■  Inicio')
@@ -465,20 +565,21 @@ class Window(QMainWindow):
         toolbar.addWidget(self.stop_button)
         self.time_label = QLabel('00:00:00.000 / 00:00:00.000')
         self.time_label.setFont(QFontDatabase.systemFont(QFontDatabase.FixedFont))
-        self.time_label.setStyleSheet('font-size:14px;color:#fff0c2')
+        self.time_label.setStyleSheet('font-size:12px;color:#fff0c2')
         toolbar.addWidget(self.time_label)
-        self.loop_button = QCheckBox('Repetir tramo')
+        self.loop_button = QCheckBox('Bucle')
         self.loop_button.setToolTip('Repite el tramo de Favorita, notas y tramo; no cambia la exportación.')
         self.loop_button.toggled.connect(lambda value: setattr(self.player, 'loop', value))
         toolbar.addWidget(self.loop_button)
         toolbar.addStretch()
         self.view_mode = QComboBox()
-        self.view_mode.addItems(['Línea de tiempo', 'Consola'])
+        self.view_mode.addItems(['Línea de tiempo', 'Consola', 'Consola vertical'])
         self.view_mode.currentIndexChanged.connect(self.change_view)
         toolbar.addWidget(self.view_mode)
         toolbar.addWidget(QLabel('Zoom'))
         self.zoom = QComboBox()
         self.zoom.addItems(['Ajustar', '2×', '4×', '8×'])
+        self.zoom.setToolTip('Zoom de la línea de tiempo. Las consolas muestran la toma completa.')
         self.zoom.currentIndexChanged.connect(self.resize_timeline)
         toolbar.addWidget(self.zoom)
         ml.addLayout(toolbar)
@@ -496,9 +597,17 @@ class Window(QMainWindow):
         self.console_scroll = QScrollArea()
         self.console_scroll.setWidgetResizable(True)
         self.console_scroll.setWidget(self.console)
+        self.vertical_console = VerticalConsole()
+        self.vertical_console.seek.connect(self.seek)
+        self.vertical_console.rename_requested.connect(self.rename_track_dialog)
+        self.vertical_console.split_requested.connect(self.toggle_channels)
+        self.vertical_scroll = QScrollArea()
+        self.vertical_scroll.setWidgetResizable(True)
+        self.vertical_scroll.setWidget(self.vertical_console)
         self.views = QStackedWidget()
         self.views.addWidget(self.scroll)
         self.views.addWidget(self.console_scroll)
+        self.views.addWidget(self.vertical_scroll)
         ml.addWidget(self.views, 1)
         bottom = QHBoxLayout()
         bottom.addWidget(QLabel('Escucha'))
@@ -519,27 +628,20 @@ class Window(QMainWindow):
         bottom.addStretch()
         self.rpp = QCheckBox('Crear .rpp')
         self.rpp.setChecked(True)
-        bottom.addWidget(self.rpp)
         self.format = QComboBox()
         self.format.addItems(['WAV · 24 bits', 'FLAC · 24 bits'])
-        bottom.addWidget(self.format)
-        self.export_button = QPushButton('Exportar stems…')
+        self.export_button = QPushButton('Exportar…')
         self.export_button.setObjectName('primary')
         self.export_button.clicked.connect(self.export_dialog)
         bottom.addWidget(self.export_button)
         ml.addLayout(bottom)
-        export_row = QHBoxLayout()
         self.options_button = QPushButton('Exportación y presets…')
         self.options_button.clicked.connect(self.options_dialog)
-        export_row.addWidget(self.options_button)
-        self.options_summary = QLabel('')
-        self.options_summary.setWordWrap(True)
-        export_row.addWidget(self.options_summary, 1)
-        ml.addLayout(export_row)
-        footer = QLabel('Medidores: picos de entrada en dBFS · stems sin ajustes de escucha · mismo inicio y duración')
-        footer.setWordWrap(True)
-        footer.setStyleSheet('color:#8fa0b5;font-size:11px')
-        ml.addWidget(footer)
+        self.export_menu = compact_menu('Exportación', (self.format, self.rpp, self.options_button), self)
+        bottom.insertWidget(bottom.count()-1, self.export_menu)
+        self.options_summary = QLabel('', self)
+        self.options_summary.hide()
+        self.meter.setToolTip('Pico de escucha en dBFS. Los medidores de pista muestran el pico de entrada.')
         split.addWidget(main)
         split.setSizes([220, 1050])
         layout.addWidget(split, 1)
@@ -597,6 +699,7 @@ class Window(QMainWindow):
         self.channel_mode.setEnabled(not busy)
         self.timeline.setEnabled(not busy)
         self.console.setEnabled(not busy)
+        self.vertical_console.setEnabled(not busy)
         self.view_mode.setEnabled(not busy)
         self.rename_button.setEnabled(not busy and self.project is not None)
         for w in (self.open_button, self.folder_button, self.library, self.search, self.library_filter):
@@ -620,6 +723,7 @@ class Window(QMainWindow):
         self.portable_delivery, self.export_naming = options['portable'], options['naming']
         self.options_summary.setText('Entrega portátil: .rpp, notas y checksums incluidos' if options['portable']
                                      else 'Stems · nombres '+('por instrumento' if options['naming'] == 'track' else 'con prefijo de proyecto'))
+        self.export_menu.setToolTip(self.options_summary.text())
 
     def options_dialog(self):
         if self.job:
@@ -633,12 +737,13 @@ class Window(QMainWindow):
             self.apply_export_options(self.preferences.data.get('export', {}))
         except ProjectError:
             self.apply_export_options({})
-        for key, widget, minimum, maximum in [('zoom', self.zoom, 0, 3), ('filter', self.library_filter, 0, 2), ('view', self.view_mode, 0, 1)]:
+        for key, widget, minimum, maximum in [('zoom', self.zoom, 0, 3), ('filter', self.library_filter, 0, 2), ('view', self.view_mode, 0, 2)]:
             value = self.session.get(key, 0)
             widget.setCurrentIndex(value if type(value) is int and minimum <= value <= maximum else 0)
         query = self.session.get('search', '')
         self.search.setText(query if isinstance(query, str) else '')
         self.center_mono.setChecked(self.session.get('center_mono') is True)
+        self.library_toggle.setChecked(self.session.get('library_visible', True) is not False)
         master = self.session.get('master', -60)
         self.master.setValue(master if type(master) is int and -600 <= master <= 0 else -60)
 
@@ -648,6 +753,7 @@ class Window(QMainWindow):
             project=str(self.project.path) if self.project else '', position=self.player.position,
             zoom=self.zoom.currentIndex(), search=self.search.text(), filter=self.library_filter.currentIndex(),
             view=self.view_mode.currentIndex(),
+            library_visible=self.library_toggle.isChecked(),
             center_mono=self.center_mono.isChecked(), master=self.master.value())
         self.preferences.data['export'] = self.current_export_options()
         try:
@@ -941,11 +1047,15 @@ class Window(QMainWindow):
             self.restore_position = None
         self.title.setText(project.name)
         self.subtitle.setText(f'{len(project.tracks)} pistas  ·  {project.rate/1000:g} kHz  ·  {clock_text(project.length/project.rate)}  ·  {project.alignment}')
-        self.notice.setText('\n'.join(project.warnings))
+        missing = sum(c.missing for t in project.tracks for c in t.clips)
+        self.notice.setText('Faltan WAV' if missing else f'Avisos ({len(project.warnings)})')
+        self.notice.setToolTip('\n'.join(project.warnings))
+        self.notice.setEnabled(bool(project.warnings))
         self.timeline.set_project(project, peaks)
         self.console.set_project(project, peaks)
+        self.vertical_console.set_project(project, peaks)
         self.refresh_preparation()
-        self.status.setText('Proyecto abierto · clic en la línea de tiempo para mover el cursor · Espacio para reproducir')
+        self.status.setText('Proyecto abierto · clic en una onda para mover el cursor · Espacio para reproducir')
         self.resize_timeline()
 
     def rename_dialog(self):
@@ -992,7 +1102,7 @@ class Window(QMainWindow):
         self.views.setCurrentIndex(index)
         self.zoom.setEnabled(index == 0)
         if self.project:
-            view = self.console if index else self.timeline
+            view = (self.timeline, self.console, self.vertical_console)[index]
             view.set_project(self.project, self.timeline.peaks)
             view.position = self.player.position
             view.meter_values = [t.peak if self.player.playing else 0 for t in self.project.tracks]
@@ -1038,6 +1148,9 @@ class Window(QMainWindow):
             self.console.position = self.player.position
             self.console.meter_values = self.timeline.meter_values
             self.console.update()
+            self.vertical_console.position = self.player.position
+            self.vertical_console.meter_values = self.timeline.meter_values
+            self.vertical_console.update()
         peak = self.player.peak if self.player.playing else 0
         self.meter.setText('CLIP' if peak >= 1 else f'{20*math.log10(peak):.1f} dBFS' if peak > 0 else '−∞ dBFS')
         self.meter.setStyleSheet('color:#f5899e' if peak >= 1 else 'color:#55d9b2')
@@ -1089,17 +1202,19 @@ class Window(QMainWindow):
 
 STYLE = '''
 QWidget { background:#111720; color:#dce7f4; font-size:13px; }
-QPushButton { background:#273548; border:1px solid #35465b; border-radius:6px; padding:9px 13px; }
+QPushButton, QToolButton { background:#273548; border:1px solid #35465b; border-radius:5px; padding:4px 8px; }
+QToolButton::menu-indicator { subcontrol-position:right center; }
+QMenu { background:#1a2330; border:1px solid #35465b; padding:6px; }
 QPushButton:hover { background:#344961; }
 QPushButton:disabled { color:#64748b; background:#1a2330; }
 QPushButton#primary { background:#55d9b2; color:#102b23; font-weight:700; border:0; }
 QPushButton#primary:disabled { background:#273548; color:#64748b; }
 QListWidget { background:#161f2b; border:1px solid #2b3849; border-radius:6px; outline:0; }
-QListWidget::item { padding:12px 10px; border-bottom:1px solid #202c3b; }
+QListWidget::item { padding:6px 8px; border-bottom:1px solid #202c3b; }
 QListWidget::item:selected { background:#26443f; color:#7aebca; }
 QListWidget::item:hover { background:#273548; }
 QScrollArea { border:1px solid #2b3849; border-radius:6px; }
-QComboBox { background:#273548; border:1px solid #35465b; padding:8px; border-radius:5px; }
+QComboBox { background:#273548; border:1px solid #35465b; padding:4px 6px; border-radius:5px; }
 QSlider::groove:horizontal { height:4px; background:#34465d; border-radius:2px; }
 QSlider::handle:horizontal { width:12px; margin:-4px 0; background:#b9cfe5; border-radius:6px; }
 QSlider::sub-page:horizontal { background:#55d9b2; }

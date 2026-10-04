@@ -6,6 +6,7 @@ import tempfile
 import shutil
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QToolButton
 from PySide6.QtCore import Qt
 from PySide6.QtCore import QPoint
 from PySide6.QtTest import QTest
@@ -141,6 +142,52 @@ window.seek(12345)
 app.processEvents()
 window.tick()
 assert window.grab().save('test-output/console.png')
+window.view_mode.setCurrentIndex(2)
+app.processEvents()
+assert window.views.currentWidget() is window.vertical_scroll
+assert window.player.renderer is renderer
+vertical = window.vertical_console
+rect = vertical.wave_rect(0)
+positions = []
+for fraction in (.1, .8):
+    point = QPoint(int(rect.center().x()), round(rect.top()+rect.height()*fraction))
+    QTest.mouseClick(vertical, Qt.LeftButton, pos=point)
+    expected = round((point.y()-rect.top())/rect.height()*window.project.length)
+    assert window.player.position == expected
+    positions.append(window.player.position)
+assert positions[1] > positions[0]
+position = window.player.position
+QTest.mouseClick(vertical, Qt.LeftButton, pos=QPoint(235, 120))
+assert window.player.position == position  # outside the waveform
+vertical.strips[0][2].setValue(-80)
+window.view_mode.setCurrentIndex(0)
+assert window.timeline.controls[2].value() == -80
+window.view_mode.setCurrentIndex(2)
+assert window.vertical_console.strips[0][2].value() == -80
+window.library_toggle.setChecked(False)
+app.processEvents()
+assert window.views.height() > window.height()*.6
+window.seek(12345)
+window.tick()
+assert window.grab().save('test-output/vertical-console.png')
+# Check the compact popups expose their original controls.
+for text, widgets in [('Proyecto', (window.rename_button, window.prepare_button, window.locate_button)),
+                      ('Exportación', (window.format, window.rpp, window.options_button)),
+                      ('Canales al abrir / lote', (window.channel_mode, window.channels_batch_button))]:
+    if text.startswith('Canales'):
+        window.library_toggle.setChecked(True)
+    button = next(b for b in window.findChildren(QToolButton) if b.text() == text)
+    button.menu().popup(button.mapToGlobal(QPoint(0, button.height())))
+    app.processEvents()
+    assert all(w.isVisible() for w in widgets)
+    button.menu().close()
+window.library_toggle.setChecked(False)
+window.resize(1000, 620)
+app.processEvents()
+assert window.width() <= 1000
+assert window.views.height() > window.height()*.6
+assert window.vertical_console.wave_rect(0).height() > 180
+window.resize(1320, 800)
 window.close()
 window = Window(state_path=Path(temporary.name)/'app-settings.json')
 window.show()
@@ -150,7 +197,8 @@ while (window.project is None or window.job) and time.monotonic() < deadline:
     time.sleep(.01)
 assert window.project and window.player.position == 12345
 assert window.zoom.currentIndex() == 1
-assert window.view_mode.currentIndex() == 1
+assert window.view_mode.currentIndex() == 2
+assert not window.library_toggle.isChecked()
 assert window.center_mono.isChecked() and not window.player.playing
 assert window.format.currentIndex() == 1 and window.portable_delivery
 assert window.preferences.presets()['Portable FLAC']['format'] == 'FLAC'
@@ -175,12 +223,18 @@ with patch('h8studio.ui.QFileDialog.getExistingDirectory', return_value=str(reco
         time.sleep(.01)
 assert not window.job and not window.project.tracks[0].clips[0].missing
 assert not window.locate_button.isEnabled()
+window.view_mode.setCurrentIndex(1)
 window.console.strips[0][5].click()
 wait_job()
 assert len(window.console.strips) == 3 and window.view_mode.currentIndex() == 1
 window.console.strips[0][5].click()
 wait_job()
 assert len(window.console.strips) == 2 and window.view_mode.currentIndex() == 1
+window.view_mode.setCurrentIndex(2)
+window.vertical_console.strips[0][5].click()
+wait_job()
+assert len(window.vertical_console.strips) == 3 and window.view_mode.currentIndex() == 2
+window.library_toggle.setChecked(True)
 window.zoom.setCurrentIndex(0)
 window.loop_button.setChecked(True)
 window.timeline.meter_values = [.2, .08]
@@ -190,4 +244,4 @@ Path('test-output').mkdir(exist_ok=True)
 assert window.grab().save('test-output/app.png')
 window.close()
 temporary.cleanup()
-print('UI passed: playback controls, stereo/mono, batch channels, filters, presets, session restore, missing-WAV relinking, screenshots, clean shutdown.')
+print('UI passed: three synced views, vertical seeking/faders, compact layout, library visibility, stereo/mono, presets, session restore, relinking, screenshots.')

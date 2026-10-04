@@ -1,4 +1,10 @@
-## H8 Studio 0.6.0
+## H8 Studio 0.7.0
+
+- Third view: Vertical Console, with top-to-bottom waveforms, a shared horizontal playhead, vertical faders, and meters.
+- Click or drag any vertical waveform to seek. Channel controls and playback stay synchronized across all three views.
+- Compact action menus free more space for audio. Hide the library for full-width viewing; both layout choices are remembered.
+
+Also included from 0.6.0:
 
 - New Console view: side-by-side channels with waveform previews, vertical faders, and input meters.
 - Seek from any waveform and switch between Console and Timeline without resetting playback or listening controls.
