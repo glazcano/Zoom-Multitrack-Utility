@@ -44,9 +44,9 @@ assert '00:00:01.000' in window.time_label.text()
 window.timeline.controls[0].setChecked(True)
 assert project.tracks[0].mute
 window.timeline.controls[0].setChecked(False)
-window.zoom.setCurrentIndex(1)
+window.zoom.setValue(2)
 app.processEvents()
-window.zoom.setCurrentIndex(0)
+window.zoom.setValue(1)
 window.stop()
 app.processEvents()
 # Use only disposable synthetic projects for checks that save channel preferences.
@@ -142,12 +142,12 @@ dialog.save_preset()
 window.apply_export_options(dialog.options())
 assert window.preferences.presets()['Portable FLAC']['portable']
 window.seek(12345)
-window.zoom.setCurrentIndex(1)
+window.zoom.setValue(2)
 renderer = window.player.renderer
 window.view_mode.setCurrentIndex(1)
 app.processEvents()
 assert window.views.currentWidget() is window.console_scroll
-assert not window.zoom.isEnabled()
+assert window.zoom.isEnabled()
 assert window.player.renderer is renderer and window.player.position == 12345
 mute, solo, fader, value, _, _ = window.console.strips[0]
 assert fader.orientation() == Qt.Vertical
@@ -156,7 +156,7 @@ mute.setChecked(True)
 assert abs(window.project.tracks[0].gain-10**(-.6)) < 1e-10
 assert window.project.tracks[0].mute
 QTest.mouseClick(window.console, Qt.LeftButton, pos=QPoint(120, 150))
-assert abs(window.player.position-window.project.length//2) <= 1
+assert window.player.position == window.console.sample_at(QPoint(120, 150))
 position = window.player.position
 window.view_mode.setCurrentIndex(0)
 assert window.timeline.controls[0].isChecked()
@@ -180,7 +180,7 @@ positions = []
 for fraction in (.1, .8):
     point = QPoint(int(rect.center().x()), round(rect.top()+rect.height()*fraction))
     QTest.mouseClick(vertical, Qt.LeftButton, pos=point)
-    expected = round((point.y()-rect.top())/rect.height()*window.project.length)
+    expected = vertical.sample_at(point)
     assert window.player.position == expected
     positions.append(window.player.position)
 assert positions[1] > positions[0]
@@ -224,7 +224,7 @@ while (window.project is None or window.job) and time.monotonic() < deadline:
     app.processEvents()
     time.sleep(.01)
 assert window.project and window.player.position == 12345
-assert window.zoom.currentIndex() == 1
+assert window.zoom.value() == 2
 assert window.view_mode.currentIndex() == 2
 assert not window.library_toggle.isChecked()
 assert window.center_mono.isChecked() and not window.player.playing
@@ -262,8 +262,56 @@ window.view_mode.setCurrentIndex(2)
 window.vertical_console.strips[0][5].click()
 wait_job()
 assert len(window.vertical_console.strips) == 3 and window.view_mode.currentIndex() == 2
+# Zoom and loop gestures use the same sample coordinates in all views.
+from h8studio.core import save_loop_range
+export_range = window.project.export_range
+for factor in (.1, 50, 2.75):
+    window.zoom.setValue(factor)
+    assert window.zoom.value() == factor
+    assert all(view.zoom_factor == factor for view in (window.timeline, window.console, window.vertical_console))
+window.time_scroll.setValue(370000)
+for index, view in enumerate((window.timeline, window.console, window.vertical_console)):
+    window.view_mode.setCurrentIndex(index)
+    app.processEvents()
+    if index == 0:
+        point = lambda f: QPoint(round(view.LEFT+f*(view.width()-view.LEFT-28)), 25)
+    elif index == 1:
+        point = lambda f: QPoint(round(14+f*(view.COLUMN-28)), 140)
+    else:
+        rect = view.wave_rect(0)
+        point = lambda f: QPoint(round(rect.center().x()), round(rect.top()+f*rect.height()))
+    save_loop_range(window.project, None)
+    first, last = point(.2), point(.7)
+    expected = tuple(sorted((view.sample_at(first), view.sample_at(last))))
+    QTest.mousePress(view, Qt.LeftButton, pos=last)
+    QTest.mouseMove(view, first, delay=20)
+    QTest.mouseRelease(view, Qt.LeftButton, pos=first)
+    assert window.project.loop_range == expected, (index, window.project.loop_range, expected)
+    assert window.player.loop and read_project(source).loop_range == expected
+    # Resize one amber boundary, keeping the other endpoint fixed.
+    target = point(.35)
+    QTest.mousePress(view, Qt.LeftButton, pos=first)
+    QTest.mouseMove(view, target, delay=20)
+    QTest.mouseRelease(view, Qt.LeftButton, pos=target)
+    assert window.project.loop_range == (view.sample_at(target), expected[1])
+    previous = window.project.loop_range
+    QTest.mousePress(view, Qt.LeftButton, pos=point(.45))
+    QTest.mouseMove(view, point(.6), delay=20)
+    QTest.keyClick(view, Qt.Key_Escape)
+    QTest.mouseRelease(view, Qt.LeftButton, pos=point(.6))
+    assert window.project.loop_range == previous
+    assert window.project.export_range == export_range
+window.zoom.setFocus()
+window.zoom.selectAll()
+QTest.keyClicks(window.zoom, window.zoom.locale().toString(3.25, 'f', 2))
+QTest.keyClick(window.zoom, Qt.Key_Return)
+assert window.zoom.value() == 3.25
+window.zoom_dial.setValue(1000)
+assert window.zoom.value() == 50
+window.zoom_dial.setValue(0)
+assert window.zoom.value() == .1
 window.library_toggle.setChecked(True)
-window.zoom.setCurrentIndex(0)
+window.zoom.setValue(1)
 window.loop_button.setChecked(True)
 window.timeline.meter_values = [.2, .08]
 window.console.meter_values = [.2, .08]

@@ -10,9 +10,9 @@ from PySide6.QtGui import QColor, QPainter, QPen, QFont, QKeySequence, QShortcut
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QFileDialog, QListWidget, QListWidgetItem, QSplitter, QScrollArea,
     QSlider, QCheckBox, QComboBox, QMessageBox, QProgressBar, QInputDialog, QLineEdit, QStackedWidget,
-    QToolButton, QMenu, QWidgetAction, QSizePolicy, QTextEdit, QPlainTextEdit, QAbstractSpinBox)
+    QToolButton, QMenu, QWidgetAction, QSizePolicy, QTextEdit, QPlainTextEdit, QAbstractSpinBox, QDial, QDoubleSpinBox, QScrollBar)
 
-from .core import read_project, waveform, export_stems, ExportCancelled, rename_project, rename_track, title_settings, ProjectError, set_stereo_split
+from .core import read_project, waveform, export_stems, ExportCancelled, rename_project, rename_track, title_settings, ProjectError, set_stereo_split, save_loop_range
 from .audio import Player
 from .dialogs import PreparationDialog, TemplatesDialog, show_report, LocateDialog, ExportOptionsDialog, LoopDialog, AboutDialog
 from .workflows import export_batch, analyze_project
@@ -50,6 +50,8 @@ class Job(QThread):
 
 class Timeline(QWidget):
     seek = Signal(int)
+    loop_selected = Signal(int, int)
+    loop_edit_started = Signal()
     rename_requested = Signal(int)
     split_requested = Signal(int)
     LEFT, TOP, ROW = 260, 44, 144
@@ -59,6 +61,13 @@ class Timeline(QWidget):
         self.project = None
         self.peaks = {}
         self.position = 0
+        self.zoom_factor = 1.0
+        self.view_start = 0.0
+        self.drag_origin = None
+        self.loop_preview = None
+        self.dragging_loop = False
+        self.setFocusPolicy(Qt.StrongFocus)
+        self.setToolTip(tr("Clic: mover cursor. Arrastrar: definir bucle. Arrastra un extremo ámbar para ajustarlo. Esc: cancelar."))
         self.controls = []
         self.meter_values = []
         self.setMinimumSize(800, 360)
@@ -110,18 +119,89 @@ class Timeline(QWidget):
         self.setMinimumHeight(max(360, self.TOP+len(project.tracks)*self.ROW+30))
         self.update()
 
+    @property
+    def span(self):
+        return max(1, self.project.length / self.zoom_factor) if self.project else 1
+
+    @property
+    def displayed_loop(self):
+        return self.loop_preview or self.project.loop_range
+
+    def fraction(self, sample):
+        return (sample-self.view_start)/self.span
+
     def x_for(self, sample):
-        return self.LEFT+sample/max(1, self.project.length)*(self.width()-self.LEFT-28)
+        return self.LEFT+self.fraction(sample)*(self.width()-self.LEFT-28)
+
+    def time_axis(self, point):
+        if self.project and self.LEFT <= point.x() <= self.width()-28:
+            return point.x(), self.LEFT, self.width()-self.LEFT-28
+
+    def sample_at(self, point):
+        axis = self.time_axis(point)
+        if axis:
+            coordinate, origin, extent = axis
+            return max(0, min(self.project.length, round(self.view_start+(coordinate-origin)/extent*self.span)))
 
     def mousePressEvent(self, event):
-        if self.project and event.position().x() >= self.LEFT and event.button() == Qt.LeftButton:
-            fraction = (event.position().x()-self.LEFT)/max(1, self.width()-self.LEFT-28)
-            self.seek.emit(round(max(0, min(1, fraction))*self.project.length))
+        if event.button() != Qt.LeftButton:
+            return
+        sample = self.sample_at(event.position())
+        if sample is None:
+            return
+        self.setFocus()
+        self.drag_origin = event.position()
+        self.drag_anchor = sample
+        self.dragging_loop = False
+        self.loop_preview = None
+        self.drag_axis = self.time_axis(event.position())[1:]
+        if self.project.loop_range:
+            extent = self.drag_axis[1]
+            index = min(range(2), key=lambda i: abs(sample-self.project.loop_range[i]))
+            if abs(sample-self.project.loop_range[index])/self.span*extent <= 6:
+                self.drag_anchor = self.project.loop_range[1-index]
 
     def mouseMoveEvent(self, event):
-        if self.project and event.buttons() & Qt.LeftButton and event.position().x() >= self.LEFT:
-            fraction = (event.position().x()-self.LEFT)/max(1, self.width()-self.LEFT-28)
-            self.seek.emit(round(max(0, min(1, fraction))*self.project.length))
+        if self.drag_origin is None or not event.buttons() & Qt.LeftButton:
+            return
+        if not self.dragging_loop and (event.position()-self.drag_origin).manhattanLength() < 5:
+            return
+        if not self.dragging_loop:
+            self.dragging_loop = True
+            self.loop_edit_started.emit()
+        # Lock to the pressed channel axis, even if dragged outside its bounds.
+        origin, extent = self.drag_axis
+        coordinate = event.position().y() if isinstance(self, VerticalConsole) else event.position().x()
+        sample = round(self.view_start+max(0, min(1, (coordinate-origin)/extent))*self.span)
+        sample = max(0, min(self.project.length, sample))
+        a, b = sorted((self.drag_anchor, sample))
+        self.loop_preview = (a, b)
+        self.update()
+
+    def mouseReleaseEvent(self, event):
+        if event.button() != Qt.LeftButton or self.drag_origin is None:
+            return
+        if self.dragging_loop:
+            if self.loop_preview and self.loop_preview[0] < self.loop_preview[1]:
+                self.loop_selected.emit(*self.loop_preview)
+        else:
+            sample = self.sample_at(event.position())
+            if sample is not None:
+                self.seek.emit(sample)
+        self.cancel_drag()
+
+    def cancel_drag(self):
+        self.drag_origin = None
+        self.dragging_loop = False
+        self.loop_preview = None
+        self.update()
+
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key_Escape and self.drag_origin is not None:
+            self.cancel_drag()
+            event.accept()
+        else:
+            super().keyPressEvent(event)
 
     def paintEvent(self, event):
         p = QPainter(self)
@@ -131,18 +211,22 @@ class Timeline(QWidget):
             p.setPen(QColor('#91a1b5'))
             p.drawText(self.rect(), Qt.AlignCenter, tr('Abre un proyecto .h8prj para ver sus pistas'))
             return
-        duration = self.project.length/self.project.rate
+        duration = self.span/self.project.rate
         scale = max(1, (self.width()-self.LEFT)/110)
         desired = duration/scale
         steps = [0.1, .25, .5, 1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 1800, 3600]
         step = next((s for s in steps if s >= desired), max(3600, desired))
-        for n in range(int(duration/step)+1):
+        p.save()
+        p.setClipRect(QRectF(self.LEFT, 0, self.width()-self.LEFT, self.height()))
+        first = math.floor(self.view_start/self.project.rate/step)
+        for n in range(first, first+int(duration/step)+2):
             sec = n*step
             x = self.x_for(sec*self.project.rate)
             p.setPen(QColor('#283342'))
             p.drawLine(int(x), 32, int(x), self.height())
             p.setPen(QColor('#8fa0b5'))
             p.drawText(QRectF(x+5, 5, 108, 26), Qt.AlignLeft, clock_text(sec)[:-4])
+        p.restore()
         for i, t in enumerate(self.project.tracks):
             y = self.TOP+i*self.ROW
             color = QColor(COLORS[i%len(COLORS)])
@@ -161,6 +245,8 @@ class Timeline(QWidget):
                        QColor('#f5899e' if peak >= 1 else '#55d9b2'))
             p.setPen(QColor('#f5899e' if peak >= 1 else '#8fa0b5'))
             p.drawText(183, y+128, f'{db:.1f}' if peak else '−∞ dBFS')
+            p.save()
+            p.setClipRect(QRectF(self.LEFT, y, self.width()-self.LEFT, self.ROW))
             for c in t.clips:
                 x1, x2 = self.x_for(c.start), self.x_for(c.start+c.frames)
                 rect = QRectF(x1+1, y+10, max(2, x2-x1-2), self.ROW-21)
@@ -189,17 +275,23 @@ class Timeline(QWidget):
                         p.drawLine(int(x), int(middle-float(group[:,1].max())*30),
                                    int(x), int(middle-float(group[:,0].min())*30))
                 p.restore()
+            p.restore()
             p.setPen(QColor('#27313f'))
             p.drawLine(0, y+self.ROW-1, self.width(), y+self.ROW-1)
+        p.save()
+        p.setClipRect(QRectF(self.LEFT, 0, self.width()-self.LEFT, self.height()))
         x = int(self.x_for(self.position))
         if self.project.export_range:
             a, b = self.project.export_range
             p.fillRect(QRectF(self.x_for(a), 31, self.x_for(b)-self.x_for(a), 8), QColor('#55d9b2'))
-        if self.project.loop_range:
-            a, b = self.project.loop_range
+        if self.displayed_loop:
+            a, b = self.displayed_loop
             p.fillRect(QRectF(self.x_for(a), 23, self.x_for(b)-self.x_for(a), 5), QColor('#f4c276'))
+            for endpoint in (a, b):
+                p.fillRect(QRectF(self.x_for(endpoint)-3, 19, 6, 13), QColor('#f4c276'))
         p.setPen(QPen(QColor('#fff0c2'), 2))
         p.drawLine(x, 30, x, self.height())
+        p.restore()
         p.end()
 
 
@@ -266,30 +358,20 @@ class Console(Timeline):
         super().resizeEvent(event)
         self.layout_strips()
 
-    def seek_at(self, point):
+    def time_axis(self, point):
         if not self.project or not self.WAVE_TOP <= point.y() <= self.WAVE_BOTTOM:
             return
         index = int(point.x()//self.COLUMN)
-        if not 0 <= index < len(self.project.tracks):
-            return
-        offset = point.x()-index*self.COLUMN-14
-        if 0 <= offset <= self.COLUMN-28:
-            self.seek.emit(round(offset/(self.COLUMN-28)*self.project.length))
-
-    def mousePressEvent(self, event):
-        if event.button() == Qt.LeftButton:
-            self.seek_at(event.position())
-
-    def mouseMoveEvent(self, event):
-        if event.buttons() & Qt.LeftButton:
-            self.seek_at(event.position())
+        origin = index*self.COLUMN+14
+        if 0 <= index < len(self.project.tracks) and origin <= point.x() <= origin+self.COLUMN-28:
+            return point.x(), origin, self.COLUMN-28
 
     def paintEvent(self, event):
         if not self.project:
             return super().paintEvent(event)
         p = QPainter(self)
         p.fillRect(self.rect(), QColor('#111720'))
-        duration = max(1, self.project.length)
+        duration = self.span
         width = self.COLUMN-28
         for i, track in enumerate(self.project.tracks):
             x, color = i*self.COLUMN, QColor(COLORS[i%len(COLORS)])
@@ -304,8 +386,8 @@ class Console(Timeline):
             p.save()
             p.setClipRect(wave_rect)
             for clip in track.clips:
-                start = x+14+clip.start/duration*width
-                end = x+14+(clip.start+clip.frames)/duration*width
+                start = x+14+(clip.start-self.view_start)/duration*width
+                end = x+14+(clip.start+clip.frames-self.view_start)/duration*width
                 rect = QRectF(start, self.WAVE_TOP, max(1, end-start), wave_rect.height())
                 p.fillRect(rect, QColor('#482b35') if clip.missing else QColor('#223d40'))
                 p.setPen(QColor('#ed8795') if clip.missing else color)
@@ -323,17 +405,19 @@ class Console(Timeline):
                         p.drawLine(xx, int(134-group[:, 1].max()*25), xx, int(134-group[:, 0].min()*25))
             if self.project.export_range:
                 a, b = self.project.export_range
-                p.fillRect(QRectF(x+14+a/duration*width, self.WAVE_TOP, (b-a)/duration*width, 4), QColor('#55d9b2'))
-            if self.project.loop_range:
-                a, b = self.project.loop_range
-                p.fillRect(QRectF(x+14+a/duration*width, self.WAVE_TOP+6, (b-a)/duration*width, 4), QColor('#f4c276'))
-            cursor = int(x+14+self.position/duration*width)
+                p.fillRect(QRectF(x+14+(a-self.view_start)/duration*width, self.WAVE_TOP, (b-a)/duration*width, 4), QColor('#55d9b2'))
+            if self.displayed_loop:
+                a, b = self.displayed_loop
+                p.fillRect(QRectF(x+14+(a-self.view_start)/duration*width, self.WAVE_TOP+6, (b-a)/duration*width, 4), QColor('#f4c276'))
+                for endpoint in (a, b):
+                    p.fillRect(QRectF(x+14+self.fraction(endpoint)*width-2, self.WAVE_TOP, 4, wave_rect.height()), QColor('#f4c276'))
+            cursor = int(x+14+(self.position-self.view_start)/duration*width)
             p.setPen(QPen(QColor('#fff0c2'), 2))
             p.drawLine(cursor, self.WAVE_TOP, cursor, self.WAVE_BOTTOM)
             p.restore()
             p.setPen(QColor('#8fa0b5'))
-            p.drawText(x+14, 182, '0:00')
-            p.drawText(QRectF(x+80, 166, width-66, 20), Qt.AlignRight, clock_text(self.project.length/self.project.rate))
+            p.drawText(x+14, 182, clock_text(self.view_start/self.project.rate))
+            p.drawText(QRectF(x+80, 166, width-66, 20), Qt.AlignRight, clock_text((self.view_start+self.span)/self.project.rate))
             peak = self.meter_values[i] if i < len(self.meter_values) else 0
             db = 20*math.log10(peak) if peak else -90
             height = self.height()-282
@@ -362,22 +446,20 @@ class VerticalConsole(Console):
             fader.setGeometry(x+145, 114, 30, self.height()-186)
             value.setGeometry(x+136, self.height()-59, 96, 24)
 
-    def seek_at(self, point):
-        if not self.project:
-            return
-        index = int(point.x()//self.COLUMN)
-        if 0 <= index < len(self.project.tracks):
-            rect = self.wave_rect(index)
-            if rect.contains(point):
-                fraction = (point.y()-rect.top())/rect.height()
-                self.seek.emit(round(fraction*self.project.length))
+    def time_axis(self, point):
+        if self.project:
+            index = int(point.x()//self.COLUMN)
+            if 0 <= index < len(self.project.tracks):
+                rect = self.wave_rect(index)
+                if rect.contains(point):
+                    return point.y(), rect.top(), rect.height()
 
     def paintEvent(self, event):
         if not self.project:
             return Timeline.paintEvent(self, event)
         p = QPainter(self)
         p.fillRect(self.rect(), QColor('#111720'))
-        duration = max(1, self.project.length)
+        duration = self.span
         for i, track in enumerate(self.project.tracks):
             x, color = i*self.COLUMN, QColor(COLORS[i%len(COLORS)])
             rect = self.wave_rect(i)
@@ -388,14 +470,14 @@ class VerticalConsole(Console):
             p.drawText(x+14, 27, p.fontMetrics().elidedText(track.name, Qt.ElideRight, self.COLUMN-28))
             p.setFont(QFont(QApplication.font().family(), 8))
             p.setPen(QColor('#8fa0b5'))
-            p.drawText(x+14, 106, tr('0:00  ↓ tiempo'))
-            p.drawText(QRectF(x+14, self.height()-28, 120, 22), Qt.AlignLeft, clock_text(self.project.length/self.project.rate))
+            p.drawText(x+14, 106, clock_text(self.view_start/self.project.rate)+' ↓')
+            p.drawText(QRectF(x+14, self.height()-28, 120, 22), Qt.AlignLeft, clock_text((self.view_start+self.span)/self.project.rate))
             p.fillRect(rect, QColor('#111720'))
             p.save()
             p.setClipRect(rect)
             for clip in track.clips:
-                start = rect.top()+clip.start/duration*rect.height()
-                end = rect.top()+(clip.start+clip.frames)/duration*rect.height()
+                start = rect.top()+(clip.start-self.view_start)/duration*rect.height()
+                end = rect.top()+(clip.start+clip.frames-self.view_start)/duration*rect.height()
                 p.fillRect(QRectF(rect.left(), start, rect.width(), max(1, end-start)),
                            QColor('#482b35') if clip.missing else QColor('#223d40'))
                 p.setPen(QColor('#ed8795') if clip.missing else color)
@@ -414,15 +496,17 @@ class VerticalConsole(Console):
                     p.drawText(QRectF(rect.left()+4, start+4, rect.width()-8, 36), Qt.TextWordWrap, tr('FALTA AUDIO'))
             if self.project.export_range:
                 a, b = self.project.export_range
-                p.fillRect(QRectF(rect.left(), rect.top()+a/duration*rect.height(), 4, (b-a)/duration*rect.height()), QColor('#55d9b2'))
-            if self.project.loop_range:
-                a, b = self.project.loop_range
-                p.fillRect(QRectF(rect.right()-4, rect.top()+a/duration*rect.height(), 4, (b-a)/duration*rect.height()), QColor('#f4c276'))
+                p.fillRect(QRectF(rect.left(), rect.top()+(a-self.view_start)/duration*rect.height(), 4, (b-a)/duration*rect.height()), QColor('#55d9b2'))
+            if self.displayed_loop:
+                a, b = self.displayed_loop
+                p.fillRect(QRectF(rect.right()-4, rect.top()+(a-self.view_start)/duration*rect.height(), 4, (b-a)/duration*rect.height()), QColor('#f4c276'))
+                for endpoint in (a, b):
+                    p.fillRect(QRectF(rect.left(), rect.top()+self.fraction(endpoint)*rect.height()-2, rect.width(), 4), QColor('#f4c276'))
             p.setPen(QPen(QColor('#8fa0b5'), 1, Qt.DotLine))
             for fraction in (.25, .5, .75):
                 yy = int(rect.top()+rect.height()*fraction)
                 p.drawLine(int(rect.left()), yy, int(rect.right()), yy)
-            cursor = int(rect.top()+self.position/duration*rect.height())
+            cursor = int(rect.top()+(self.position-self.view_start)/duration*rect.height())
             p.setPen(QPen(QColor('#fff0c2'), 2))
             p.drawLine(int(rect.left()), cursor, int(rect.right()), cursor)
             p.restore()
@@ -499,13 +583,13 @@ class Window(QMainWindow):
         heading.addStretch()
         self.about_button = QPushButton(tr('Acerca de…'))
         self.about_button.clicked.connect(self.about_dialog)
-        heading.addWidget(self.about_button)
+
         self.open_button = QPushButton(tr('Abrir proyecto…'))
         self.folder_button = QPushButton(tr('Explorar carpeta…'))
         self.open_button.clicked.connect(self.open_dialog)
         self.folder_button.clicked.connect(self.folder_dialog)
-        heading.addWidget(compact_menu(tr('Abrir'), (self.open_button, self.folder_button), self))
-        layout.addLayout(heading)
+        self.open_menu = compact_menu(tr('Abrir'), (self.open_button, self.folder_button), self)
+
         split = QSplitter()
         side = QWidget()
         sl = QVBoxLayout(side)
@@ -563,7 +647,8 @@ class Window(QMainWindow):
         self.rename_button = QPushButton(tr('Cambiar título…'))
         self.rename_button.clicked.connect(self.rename_dialog)
         ml.addLayout(title_row)
-        ml.addWidget(self.subtitle)
+        self.subtitle.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        title_row.addWidget(self.subtitle, 2)
         self.prepare_button = QPushButton(tr('Favorita, notas y tramo…'))
         self.prepare_button.clicked.connect(self.prepare_dialog)
         self.templates_button = QPushButton(tr('Plantillas…'))
@@ -572,13 +657,14 @@ class Window(QMainWindow):
         self.problems_button.clicked.connect(self.problems_dialog)
         self.locate_button = QPushButton(tr('Localizar WAV…'))
         self.locate_button.clicked.connect(self.locate_dialog)
-        title_row.addWidget(compact_menu(tr('Proyecto'), (self.rename_button, self.prepare_button,
-            self.templates_button, self.problems_button, self.locate_button), self))
+        self.project_menu = compact_menu(tr('Proyecto'), (self.rename_button, self.prepare_button,
+            self.templates_button, self.problems_button, self.locate_button), self)
         self.notice = QPushButton(tr('Avisos'))
         self.notice.setEnabled(False)
         self.notice.clicked.connect(lambda: show_report(self, tr('Observaciones del proyecto'), '\n'.join(self.project.warnings)) if self.project else None)
-        title_row.addWidget(self.notice)
-        toolbar = QHBoxLayout()
+
+        toolbar = heading
+        heading.takeAt(heading.count()-1)  # Replace the header spacer with transport controls.
         self.play_button = QPushButton(tr('▶  Reproducir'))
         self.stop_button = QPushButton(tr('■  Inicio'))
         self.play_button.clicked.connect(self.toggle_play)
@@ -588,7 +674,7 @@ class Window(QMainWindow):
         self.time_label = QLabel('00:00:00.000 / 00:00:00.000')
         self.time_label.setFont(QFontDatabase.systemFont(QFontDatabase.FixedFont))
         self.time_label.setStyleSheet('font-size:12px;color:#fff0c2')
-        toolbar.addWidget(self.time_label)
+        title_row.addWidget(self.time_label)
         self.loop_button = QCheckBox(tr('Bucle'))
         self.loop_button.setToolTip(tr('Repite el tramo del bucle o toda la toma. Usa A–B para definir inicio y fin.'))
         self.loop_button.toggled.connect(lambda value: setattr(self.player, 'loop', value))
@@ -597,18 +683,44 @@ class Window(QMainWindow):
         self.loop_range_button.setToolTip(tr('Definir el tramo del bucle'))
         self.loop_range_button.clicked.connect(self.loop_dialog)
         toolbar.addWidget(self.loop_range_button)
+        toolbar.addWidget(self.open_menu)
+        toolbar.addWidget(self.project_menu)
+        toolbar.addWidget(self.notice)
+        toolbar.addWidget(self.about_button)
         toolbar.addStretch()
         self.view_mode = QComboBox()
         self.view_mode.addItems([tr('Línea de tiempo'), tr('Consola'), tr('Consola vertical')])
         self.view_mode.currentIndexChanged.connect(self.change_view)
         toolbar.addWidget(self.view_mode)
         toolbar.addWidget(QLabel('Zoom'))
-        self.zoom = QComboBox()
-        self.zoom.addItems([tr('Ajustar'), '2×', '4×', '8×'])
-        self.zoom.setToolTip(tr('Zoom de la línea de tiempo. Las consolas muestran la toma completa.'))
-        self.zoom.currentIndexChanged.connect(self.resize_timeline)
+        self.zoom_dial = QDial()
+        self.zoom_dial.setRange(0, 1000)
+        self.zoom_dial.setFixedSize(32, 32)
+        self.zoom_dial.setWrapping(False)
+        self.zoom = QDoubleSpinBox()
+        self.zoom.setRange(.1, 50)
+        self.zoom.setDecimals(2)
+        self.zoom.setSingleStep(.1)
+        self.zoom.setPrefix('×')
+        self.zoom.setValue(1)
+        self.zoom.setKeyboardTracking(False)
+        self.zoom.setFixedWidth(83)
+        self.zoom.setToolTip(tr('×1: toma completa. Arrastra la perilla o escribe un valor entre ×0,1 y ×50.'))
+        self.zoom_dial.setToolTip(self.zoom.toolTip())
+        self.zoom.valueChanged.connect(self.change_zoom)
+        self.zoom_dial.valueChanged.connect(lambda value: self.zoom.setValue(.1*500**(value/1000)))
+        toolbar.addWidget(self.zoom_dial)
         toolbar.addWidget(self.zoom)
-        ml.addLayout(toolbar)
+        action_widget = QWidget()
+        action_widget.setLayout(toolbar)
+        toolbar.setContentsMargins(0, 0, 0, 0)
+        self.action_scroll = QScrollArea()
+        self.action_scroll.setWidget(action_widget)
+        self.action_scroll.setWidgetResizable(True)
+        self.action_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.action_scroll.setFixedHeight(54)
+        self.action_scroll.setFrameShape(QScrollArea.NoFrame)
+        layout.insertWidget(0, self.action_scroll)
         self.timeline = Timeline()
         self.timeline.seek.connect(self.seek)
         self.timeline.rename_requested.connect(self.rename_track_dialog)
@@ -635,6 +747,15 @@ class Window(QMainWindow):
         self.views.addWidget(self.console_scroll)
         self.views.addWidget(self.vertical_scroll)
         ml.addWidget(self.views, 1)
+        self.time_scroll = QScrollBar(Qt.Horizontal)
+        self.time_scroll.setRange(0, 1000000)
+        self.time_scroll.setToolTip(tr('Desplazar el tiempo visible en las tres vistas'))
+        self.time_scroll.valueChanged.connect(self.resize_timeline)
+        ml.addWidget(self.time_scroll)
+        for view in (self.timeline, self.console, self.vertical_console):
+            view.loop_selected.connect(self.set_loop_selection)
+            view.loop_edit_started.connect(self.player.pause)
+
         bottom = QHBoxLayout()
         bottom.addWidget(QLabel(tr('Escucha')))
         self.master = QSlider(Qt.Horizontal)
@@ -717,7 +838,7 @@ class Window(QMainWindow):
     def eventFilter(self, watched, event):
         # Preserve spaces and Home while editing, including dialog text fields.
         if event.type() == QEvent.ShortcutOverride and event.key() in (Qt.Key_Space, Qt.Key_Home):
-            if isinstance(watched, (QLineEdit, QTextEdit, QPlainTextEdit, QAbstractSpinBox)):
+            if isinstance(watched, (QLineEdit, QTextEdit, QPlainTextEdit, QAbstractSpinBox, QDial, QDoubleSpinBox, QScrollBar)):
                 event.accept()
                 return True
         return super().eventFilter(watched, event)
@@ -785,9 +906,12 @@ class Window(QMainWindow):
             self.apply_export_options(self.preferences.data.get('export', {}))
         except ProjectError:
             self.apply_export_options({})
-        for key, widget, minimum, maximum in [('zoom', self.zoom, 0, 3), ('filter', self.library_filter, 0, 2), ('view', self.view_mode, 0, 2)]:
+        for key, widget, minimum, maximum in [('filter', self.library_filter, 0, 2), ('view', self.view_mode, 0, 2)]:
             value = self.session.get(key, 0)
             widget.setCurrentIndex(value if type(value) is int and minimum <= value <= maximum else 0)
+        zoom = self.session.get('zoom_factor', 2**self.session.get('zoom', 0) if type(self.session.get('zoom', 0)) is int and 0 <= self.session.get('zoom', 0) <= 3 else 1)
+        self.zoom.setValue(zoom if type(zoom) in (int, float) and math.isfinite(zoom) and .1 <= zoom <= 50 else 1)
+        self.change_zoom()
         query = self.session.get('search', '')
         self.search.setText(query if isinstance(query, str) else '')
         self.center_mono.setChecked(self.session.get('center_mono') is True)
@@ -799,7 +923,7 @@ class Window(QMainWindow):
         self.preferences.data['session'] = dict(
             library=str(self.library_root or (self.project.path.parent if self.project else '')),
             project=str(self.project.path) if self.project else '', position=self.player.position,
-            zoom=self.zoom.currentIndex(), search=self.search.text(), filter=self.library_filter.currentIndex(),
+            zoom_factor=self.zoom.value(), search=self.search.text(), filter=self.library_filter.currentIndex(),
             view=self.view_mode.currentIndex(),
             library_visible=self.library_toggle.isChecked(),
             center_mono=self.center_mono.isChecked(), master=self.master.value())
@@ -1103,7 +1227,7 @@ class Window(QMainWindow):
         self.vertical_console.set_project(project, peaks)
         self.refresh_preparation()
         self.status.setText(tr('Proyecto abierto · clic en una onda para mover el cursor · Espacio para reproducir'))
-        self.resize_timeline()
+        self.change_zoom()
 
     def rename_dialog(self):
         if not self.project or self.job:
@@ -1147,7 +1271,7 @@ class Window(QMainWindow):
         if not hasattr(self, 'views'):
             return
         self.views.setCurrentIndex(index)
-        self.zoom.setEnabled(index == 0)
+
         if self.project:
             view = (self.timeline, self.console, self.vertical_console)[index]
             view.set_project(self.project, self.timeline.peaks)
@@ -1155,8 +1279,43 @@ class Window(QMainWindow):
             view.meter_values = [t.peak if self.player.playing else 0 for t in self.project.tracks]
         self.resize_timeline()
 
+    def change_zoom(self, *_):
+        if not hasattr(self, 'time_scroll'):
+            return
+        self.zoom_dial.blockSignals(True)
+        self.zoom_dial.setValue(round(1000*math.log(self.zoom.value()/.1, 500)))
+        self.zoom_dial.blockSignals(False)
+        if self.project:
+            span = self.project.length/self.zoom.value()
+            maximum = max(0, self.project.length-span)
+            # Keep the playhead near the center while zooming in.
+            start = max(0, min(maximum, self.player.position-span/2))
+            self.time_scroll.setValue(round(start/maximum*1000000) if maximum else 0)
+        self.resize_timeline()
+
     def resize_timeline(self, *_):
-        self.timeline.setMinimumWidth(max(650, self.scroll.viewport().width())*(2**self.zoom.currentIndex()))
+        if not hasattr(self, 'time_scroll'):
+            return
+        factor = self.zoom.value()
+        self.time_scroll.setVisible(factor > 1)
+        self.time_scroll.setPageStep(max(1, round(1000000/max(1, factor-1))))
+        for view in (self.timeline, self.console, self.vertical_console):
+            view.zoom_factor = factor
+            view.view_start = (max(0, self.project.length-self.project.length/factor)*self.time_scroll.value()/1000000) if self.project else 0
+            view.update()
+        self.timeline.setMinimumWidth(650)
+
+    def set_loop_selection(self, start, end):
+        if not self.project or self.job:
+            return
+        try:
+            save_loop_range(self.project, (start, end))
+        except (OSError, ProjectError) as exc:
+            self.job_error(str(exc))
+            return
+        self.loop_button.setChecked(True)
+        for view in (self.timeline, self.console, self.vertical_console):
+            view.update()
 
     def resizeEvent(self, event):
         super().resizeEvent(event)

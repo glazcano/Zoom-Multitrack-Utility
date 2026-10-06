@@ -14,9 +14,9 @@ Open `.h8prj` projects, listen to their tracks, and export aligned WAV or FLAC s
 
 English is the default language. Use **About… → Interface language** to select English or Spanish; save and reopen the app to apply it. About also lists app, dependency, and system versions.
 
-Choose **Timeline**, **Console**, or **Vertical console**. Console shows side-by-side channels with waveforms above vertical faders; Vertical Console runs each waveform **from top to bottom**, alongside its fader and meter. Click or drag on any waveform to move the shared playhead. Switching views keeps playback and listening settings intact; the chosen view is remembered. Timeline zoom applies to Timeline; both consoles show the full take.
+Choose **Timeline**, **Console**, or **Vertical console**. Console shows side-by-side channels with waveforms above vertical faders; Vertical Console runs each waveform **from top to bottom**, alongside its fader and meter. Click any waveform to move the shared playhead. Drag to select a loop; drag an amber boundary to adjust it, or press **Esc** to cancel the gesture. Switching views keeps playback and listening settings intact; the chosen view is remembered. The zoom dial and numeric field apply to all three views: **×0.1–×50**, with **×1** fitting the whole take. The time scrollbar navigates an enlarged take while faders and buttons keep their size.
 
-Compact **Open**, **Project**, **Open / batch channels**, and **Export** menus group the less frequent controls. **Warnings** opens import warnings; missing audio remains clearly indicated. Uncheck **Library** to give the viewer the full window width. Preparation tools (notes, range, templates, missing WAVs) are in **Project**; format, `.rpp`, and presets are in **Export**.
+A single action row groups playback, loop, view, zoom, and menus; the project title and metadata share the row below. On narrow windows, scroll the action row horizontally to reach every control. Compact **Open**, **Project**, **Open / batch channels**, and **Export** menus group the less frequent controls. **Warnings** opens import warnings; missing audio remains clearly indicated. Uncheck **Library** to give the viewer the full window width. Preparation tools (notes, range, templates, missing WAVs) are in **Project**; format, `.rpp`, and presets are in **Export**.
 
 ## Prepare your takes
 
@@ -27,7 +27,7 @@ Compact **Open**, **Project**, **Open / batch channels**, and **Export** menus g
 - **Problem summary:** check for missing audio, silence, very low levels, and possible clipping.
 - **Find missing WAVs:** use **Locate WAV files…** to search a folder and its subfolders. Choose each match explicitly; matching checks name, duration, sample rate, and channels. Associations are saved without moving audio.
 - **Search and filters:** find projects by name, notes, or folder; show favorites or missing/unreadable projects. Batch actions use checked, visible projects.
-- **Listening tools:** per-track input peak meters remain active on muted tracks. **Center mono** places split mono channels in both speakers; **Loop** repeats the entire take, or the independent range set with **A–B…**. Enter start/end times or use the cursor buttons, then save. Amber markers show the loop; green markers show the export range. Both affect monitoring only.
+- **Listening tools:** per-track input peak meters remain active on muted tracks. **Center mono** places split mono channels in both speakers; **Loop** repeats the entire take, or the independent range set with **A–B…**. Drag on a waveform or the timeline ruler to select the loop, or enter start/end times in **A–B…**. Amber markers show the loop; green markers show the export range. Both affect monitoring only.
 - **Resume your session:** the last library, project, cursor, zoom, search, listening level, and export options return on the next launch, with playback paused.
 
 ### Stereo or two mono tracks

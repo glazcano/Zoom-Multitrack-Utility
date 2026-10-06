@@ -1,10 +1,9 @@
-## H8 Studio 0.8.0
+## H8 Studio 0.9.0
 
-- Fixed looping: **Loop** works without an export selection. **A–B…** sets an independent, saved loop range; without one, the entire take repeats.
-- Amber loop markers appear in all three views. Export ranges remain independent.
-- English is now the default interface language. **About…** lets you select English or Spanish for the next launch and lists dependency, app, and system versions.
-- Short loops render once per audio callback, split L/R channels share source reads, and only the visible view repaints when its playhead or meters change.
-- Space and Home now retain their normal behavior inside text fields.
+- Compact header: project menus and playback controls share one action row; project title, metadata, and time share the row below.
+- Drag a waveform or timeline ruler to select a loop in any view. Drag an amber boundary to resize it; press Esc to cancel. A click still seeks. Export ranges are unchanged.
+- Shared zoom from ×0.1 to ×50, with a logarithmic dial and precise numeric entry. ×1 fits the whole take; a time scrollbar navigates the enlarged audio without resizing track controls.
+- Saved zoom settings migrate from the previous four-step selector.
 
 Download the package for Windows x64, Fedora 43 x64, macOS Apple Silicon, or macOS Intel.
 Extract the package and keep all its contents together. Fedora requires the libraries in the platform guide.

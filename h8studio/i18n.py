@@ -491,3 +491,5 @@ EN = {'01_Instrumento.wav': '01_Instrument.wav',
 
 EN.update({'Análisis de las tomas completas. Pico ≥ −0,1 dBFS: posible saturación; RMS < −60 dBFS: nivel muy bajo.\n': 'Complete-take analysis. Peak ≥ −0.1 dBFS: possible clipping; RMS < −60 dBFS: very low level.\n', '\nObservaciones de importación:': '\nImport warnings:'})
 EN['El idioma se aplica al volver a abrir la app.'] = 'Language changes take effect next time you open the app.'
+
+EN.update({'Clic: mover cursor. Arrastrar: definir bucle. Arrastra un extremo ámbar para ajustarlo. Esc: cancelar.': 'Click: seek. Drag: select loop. Drag an amber boundary to adjust it. Esc: cancel.', '×1: toma completa. Arrastra la perilla o escribe un valor entre ×0,1 y ×50.': '×1: fit the whole take. Turn the dial or enter a value from ×0.1 to ×50.', 'Desplazar el tiempo visible en las tres vistas': 'Scroll the visible time in all three views'})
