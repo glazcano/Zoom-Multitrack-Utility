@@ -2,7 +2,7 @@ from .i18n import tr
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel, QCheckBox,
     QPlainTextEdit, QDoubleSpinBox, QPushButton, QDialogButtonBox, QMessageBox,
-    QComboBox, QTableWidget, QTableWidgetItem, QHeaderView)
+    QComboBox, QTableWidget, QTableWidgetItem, QHeaderView, QLineEdit, QFileDialog)
 from .core import save_preparation, save_loop_range, validate_title, ProjectError
 from .workflows import read_templates, atomic_json, apply_template
 from .preferences import export_options
@@ -271,15 +271,18 @@ class ExportOptionsDialog(QDialog):
         self.names.addItems(sorted(preferences.presets()))
         self.names.setEditText('')
         self.names.setPlaceholderText(tr('Nombre del preset'))
+        layout.addWidget(QLabel(tr('Nombre del preset')))
         layout.addWidget(self.names)
         self.format = QComboBox()
         self.format.addItems(['WAV', 'FLAC'])
+        layout.addWidget(QLabel(tr('Formato · 24 bits')))
         layout.addWidget(self.format)
         self.channels = QComboBox()
         self.channels.addItems([tr('Canales guardados'), tr('Una pista estéreo'), tr('Dos pistas mono (L/R)')])
         layout.addWidget(self.channels)
         self.naming = QComboBox()
         self.naming.addItems([tr('01_Instrumento.wav'), tr('Proyecto_01_Instrumento.wav')])
+        layout.addWidget(QLabel(tr('Nombres de archivo')))
         layout.addWidget(self.naming)
         self.rpp = QCheckBox(tr('Crear proyecto REAPER (.rpp)'))
         self.portable = QCheckBox(tr('Carpeta de entrega: stems + .rpp + notas + checksums'))
@@ -334,6 +337,40 @@ class ExportOptionsDialog(QDialog):
                 self.names.removeItem(index)
         except OSError as exc:
             QMessageBox.warning(self, 'Preset', str(exc))
+
+
+class ExportDialog(ExportOptionsDialog):
+    def __init__(self, preferences, current, destination, parent=None, batch=False):
+        super().__init__(preferences, current, parent)
+        self.setWindowTitle(tr('Exportar stems'))
+        self.resize(560, 540)
+        row = QHBoxLayout()
+        self.destination = QLineEdit(str(destination))
+        self.destination.setAccessibleName(tr('Carpeta de destino'))
+        browse = QPushButton(tr('Elegir carpeta…'))
+        browse.clicked.connect(self.browse)
+        row.addWidget(self.destination, 1)
+        row.addWidget(browse)
+        self.layout().insertWidget(0, QLabel(tr('Carpeta de destino · se creará una carpeta nueva')))
+        self.layout().insertLayout(1, row)
+        self.channels.setVisible(batch)
+        if not batch:
+            hint = QLabel(tr('Se exportan las pistas visibles y el tramo de exportación guardado, no el bucle.'))
+            hint.setWordWrap(True)
+            self.layout().insertWidget(2, hint)
+        self.findChild(QDialogButtonBox).button(QDialogButtonBox.Ok).setText(tr('Exportar'))
+
+    def browse(self):
+        folder = QFileDialog.getExistingDirectory(self, tr('Carpeta de destino'), self.destination.text())
+        if folder:
+            self.destination.setText(folder)
+
+    def accept(self):
+        from pathlib import Path
+        if not Path(self.destination.text().strip()).is_dir() or not self.destination.text().strip():
+            QMessageBox.warning(self, tr('Carpeta de destino'), tr('Elige una carpeta existente.'))
+            return
+        super().accept()
 
 
 class AboutDialog(QDialog):

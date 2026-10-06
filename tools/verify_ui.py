@@ -15,7 +15,7 @@ from h8studio.ui import Window, STYLE
 from h8studio.core import read_project, waveform
 from h8studio.core import save_preparation
 from h8studio.preferences import Preferences
-from h8studio.dialogs import ExportOptionsDialog, LocateDialog, LoopDialog, AboutDialog
+from h8studio.dialogs import ExportOptionsDialog, LocateDialog, LoopDialog, AboutDialog, ExportDialog
 
 app = QApplication([])
 app.setStyle('Fusion')
@@ -65,7 +65,7 @@ def wait_job():
     app.processEvents()
 
 window.seek(12345)
-next(w for w in window.timeline.controls if getattr(w, 'text', lambda: '')() == '2 mono').click()
+next(w for w in window.timeline.controls if w.property('trackAction') == 'split').click()
 wait_job()
 assert len(window.project.tracks) == 3
 assert window.player.position == 12345
@@ -74,7 +74,7 @@ window.timeline.controls[0].setChecked(True)
 assert window.project.tracks[0].mute and not window.project.tracks[1].mute
 Path('test-output').mkdir(exist_ok=True)
 assert window.grab().save('test-output/channels-mono.png')
-next(w for w in window.timeline.controls if getattr(w, 'text', lambda: '')() == 'Stereo').click()
+next(w for w in window.timeline.controls if w.property('trackAction') == 'join').click()
 wait_job()
 assert len(window.project.tracks) == 2
 assert window.player.position == 12345
@@ -185,7 +185,7 @@ for fraction in (.1, .8):
     positions.append(window.player.position)
 assert positions[1] > positions[0]
 position = window.player.position
-QTest.mouseClick(vertical, Qt.LeftButton, pos=QPoint(235, 120))
+QTest.mouseClick(vertical, Qt.LeftButton, pos=QPoint(170, 120))
 assert window.player.position == position  # outside the waveform
 vertical.strips[0][2].setValue(-80)
 window.view_mode.setCurrentIndex(0)
@@ -200,7 +200,6 @@ window.tick()
 assert window.grab().save('test-output/vertical-console.png')
 # Check the compact popups expose their original controls.
 for text, widgets in [('Project', (window.rename_button, window.prepare_button, window.locate_button)),
-                      ('Export', (window.format, window.rpp, window.options_button)),
                       ('Open / batch channels', (window.channel_mode, window.channels_batch_button))]:
     if text.startswith('Canales'):
         window.library_toggle.setChecked(True)
@@ -228,9 +227,93 @@ assert window.zoom.value() == 2
 assert window.view_mode.currentIndex() == 2
 assert not window.library_toggle.isChecked()
 assert window.center_mono.isChecked() and not window.player.playing
-assert window.format.currentIndex() == 1 and window.portable_delivery
+assert window.current_export_options()['format'] == 'FLAC' and window.portable_delivery
 assert window.preferences.presets()['Portable FLAC']['format'] == 'FLAC'
 
+# Actual export dialog: format lives here, cancellation is inert, exports use
+# the export selection rather than the independently selected loop.
+from PySide6.QtWidgets import QPushButton, QDialogButtonBox
+from h8studio.widgets import MeterFader
+import soundfile as sf
+window.library_toggle.setChecked(True)
+app.processEvents()
+assert not window.status_panel.isVisible()
+assert window.monitor_panel.mapToGlobal(QPoint(0, 0)).y() < window.library_label.mapToGlobal(QPoint(0, 0)).y()
+assert window.export_button.parentWidget() is window.action_scroll.widget()
+assert not any(b.text() == 'Export' for b in window.findChildren(QToolButton))
+assert window.loop_label.text().startswith('Loop region ')
+for view in (window.timeline, window.console, window.vertical_console):
+    assert all(isinstance(fader, MeterFader) for fader in view.faders)
+    for button in view.controls:
+        if isinstance(button, QPushButton):
+            assert not button.text() and button.accessibleName() and button.toolTip()
+fader = window.vertical_console.strips[0][2]
+original_gain = fader.value()
+fader.set_peak(.5)
+assert fader.value() == original_gain
+fader.setValue(-120)
+app.processEvents()
+thumb = fader.handle_rect().center()
+QTest.mousePress(fader, Qt.LeftButton, pos=thumb)
+QTest.mouseMove(fader, QPoint(thumb.x(), thumb.y()+40), delay=20)
+QTest.mouseRelease(fader, Qt.LeftButton, pos=QPoint(thumb.x(), thumb.y()+40))
+assert fader.value() < -120
+fader.set_peak(1.1)
+value = fader.value()
+QTest.keyClick(fader, Qt.Key_Up)
+assert fader.value() > value
+fader.setValue(original_gain)
+assert window.vertical_console.wave_rect(0).bottom() >= window.vertical_console.height()-30
+# Pencil action renames the selected track and persists the label.
+with patch('h8studio.ui.QInputDialog.getText', return_value=('Guitar', True)):
+    window.vertical_console.strips[0][4].click()
+assert window.project.tracks[0].name == 'Guitar'
+assert read_project(source).tracks[0].name == 'Guitar'
+output_root = Path(temporary.name)/'ui-exports'
+output_root.mkdir()
+before = window.current_export_options()
+def cancel_export(dialog):
+    dialog.format.setCurrentText('WAV')
+    dialog.reject()
+    return dialog.result()
+with patch.object(ExportDialog, 'exec', cancel_export):
+    window.export_button.click()
+assert window.current_export_options() == before and not window.job
+
+def choose_export(dialog):
+    dialog.destination.setText(str(output_root))
+    dialog.format.setCurrentText('FLAC')
+    dialog.rpp.setChecked(True)
+    dialog.portable.setChecked(False)
+    dialog.show()
+    app.processEvents()
+    assert dialog.format.isVisible() and dialog.channels.isHidden()
+    assert dialog.grab().save('test-output/export-dialog.png')
+    dialog.accept()
+    return dialog.result()
+with patch.object(ExportDialog, 'exec', choose_export), patch('h8studio.ui.QMessageBox.information'):
+    window.export_button.click()
+    wait_job()
+assert not window.status_panel.isVisible()
+outputs = list(output_root.glob('*/*.flac'))
+assert len(outputs) == len(window.project.tracks)
+a, b = window.project.export_range or (0, window.project.length)
+assert all(sf.info(str(path)).frames == b-a for path in outputs)
+assert len(list(output_root.glob('*/Proyecto.rpp'))) == 1
+# Batch export also opens the format/preset dialog.
+window.library.item(0).setCheckState(Qt.Checked)
+def choose_batch(dialog):
+    dialog.destination.setText(str(output_root))
+    dialog.format.setCurrentText('WAV')
+    dialog.show()
+    app.processEvents()
+    assert dialog.channels.isVisible()
+    dialog.accept()
+    return dialog.result()
+with patch.object(ExportDialog, 'exec', choose_batch), patch('h8studio.ui.show_report'):
+    window.batch_button.click()
+    wait_job()
+assert list(output_root.rglob('*.wav'))
 # Exercise the full missing-media UI flow with an explicitly selected candidate.
 window.player.close()
 recovered = Path(temporary.name)/'recovered'

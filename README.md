@@ -9,30 +9,30 @@ Open `.h8prj` projects, listen to their tracks, and export aligned WAV or FLAC s
 1. Keep each `.h8prj` beside its original WAV files, inside its `.zprj` folder.
 2. Open a project, drop it onto the window, or browse a folder to build a project list.
 3. Press **Space** to play or pause. Click the timeline to seek; use mute, solo, and gain to check each track.
-4. Choose WAV or FLAC, leave **Create .rpp** enabled, and export.
+4. Click **Export…** in the top row, choose the destination and WAV/FLAC format, and leave **Create .rpp** enabled if needed.
 5. Open `Proyecto.rpp` in REAPER, or import all stems on separate tracks at **00:00**.
 
 English is the default language. Use **About… → Interface language** to select English or Spanish; save and reopen the app to apply it. About also lists app, dependency, and system versions.
 
-Choose **Timeline**, **Console**, or **Vertical console**. Console shows side-by-side channels with waveforms above vertical faders; Vertical Console runs each waveform **from top to bottom**, alongside its fader and meter. Click any waveform to move the shared playhead. Drag to select a loop; drag an amber boundary to adjust it, or press **Esc** to cancel the gesture. Switching views keeps playback and listening settings intact; the chosen view is remembered. The zoom dial and numeric field apply to all three views: **×0.1–×50**, with **×1** fitting the whole take. The time scrollbar navigates an enlarged take while faders and buttons keep their size.
+Choose **Timeline**, **Console**, or **Vertical console**. Console shows side-by-side channels with waveforms above vertical faders; Vertical Console runs each waveform **from top to bottom**, alongside a combined fader and input meter. Narrow channel strips use the full viewer height. Click any waveform to move the shared playhead. Drag to select a loop; drag an amber boundary to adjust it, or press **Esc** to cancel the gesture. Switching views keeps playback and listening settings intact; the chosen view is remembered. The zoom dial and numeric field apply to all three views: **×0.1–×50**, with **×1** fitting the whole take. The time scrollbar navigates an enlarged take while faders and buttons keep their size.
 
-A single action row groups playback, loop, view, zoom, and menus; the project title and metadata share the row below. On narrow windows, scroll the action row horizontally to reach every control. Compact **Open**, **Project**, **Open / batch channels**, and **Export** menus group the less frequent controls. **Warnings** opens import warnings; missing audio remains clearly indicated. Uncheck **Library** to give the viewer the full window width. Preparation tools (notes, range, templates, missing WAVs) are in **Project**; format, `.rpp`, and presets are in **Export**.
+A single action row groups playback, loop, view, zoom, and menus; the project title and metadata share the row below. On narrow windows, scroll the action row horizontally to reach every control. Compact **Open**, **Project**, and **Open / batch channels** menus group the less frequent controls. **Export…** opens the destination, format, and preset dialog. **Warnings** opens import warnings; missing audio remains clearly indicated. Uncheck **Library** to give the viewer the full window width. Preparation tools (notes, range, templates, missing WAVs) are in **Project**; format, `.rpp`, and presets are in the export dialog. Monitor volume, **Center mono**, and the playback clock sit above the project library. The amber **Loop region** label shows the independent loop boundaries. Idle footer instructions are removed; task progress and cancellation appear only during work.
 
 ## Prepare your takes
 
-- **Names and templates:** rename projects and instruments, or save reusable input-to-instrument mappings.
+- **Names and templates:** use the pencil beside a track name to label its instrument. Rename projects or save reusable input-to-instrument mappings through **Project**.
 - **Favorites and notes:** mark good takes and keep recording notes with the project.
 - **Export range:** choose one section for every track; exports start at zero and have matching lengths.
 - **Batch processing:** check projects in the library and export them together. A report lists completed, failed, and pending takes.
 - **Problem summary:** check for missing audio, silence, very low levels, and possible clipping.
 - **Find missing WAVs:** use **Locate WAV files…** to search a folder and its subfolders. Choose each match explicitly; matching checks name, duration, sample rate, and channels. Associations are saved without moving audio.
 - **Search and filters:** find projects by name, notes, or folder; show favorites or missing/unreadable projects. Batch actions use checked, visible projects.
-- **Listening tools:** per-track input peak meters remain active on muted tracks. **Center mono** places split mono channels in both speakers; **Loop** repeats the entire take, or the independent range set with **A–B…**. Drag on a waveform or the timeline ruler to select the loop, or enter start/end times in **A–B…**. Amber markers show the loop; green markers show the export range. Both affect monitoring only.
+- **Listening tools:** the crossed-speaker and headphones buttons control mute and solo. Tooltips identify every icon. Input peaks light the fader rail independently of listening gain, and remain active on muted tracks. **Center mono** places split mono channels in both speakers; **Loop** repeats the entire take, or the independent range set with **A–B…**. Drag on a waveform or the timeline ruler to select the loop, or enter start/end times in **A–B…**. Amber markers show the loop; green markers show the export range. Both affect monitoring only.
 - **Resume your session:** the last library, project, cursor, zoom, search, listening level, and export options return on the next launch, with playback paused.
 
 ### Stereo or two mono tracks
 
-Use **2 mono** on a stereo track to split it into **L** and **R**. Use **Stereo** on either channel to join the view again. Each mono channel has its own name, mute, solo, and listening gain. Playback retains left/right placement; switching pauses playback and keeps the cursor position.
+Use the two-channel icon to split a stereo track into **L** and **R**, or join either split channel back into stereo. Hover over the button to see its action. Each mono channel has its own name, mute, solo, and listening gain. Playback retains left/right placement; switching pauses playback and keeps the cursor position.
 
 The library's channel selector also supports bulk use:
 
@@ -48,7 +48,7 @@ Split channels produce separate mono stems and REAPER tracks, panned left/right 
 
 ### Export presets and portable delivery
 
-Open **Export and presets…** to save, edit, apply, or delete presets for WAV/FLAC, channel layout, filename style, `.rpp`, and portable delivery. Channel choices apply to opening projects and batch export; individual export follows the visible tracks.
+Open **Export…** or **Export checked projects…** to save, edit, apply, or delete presets for WAV/FLAC, channel layout, filename style, `.rpp`, and portable delivery. Channel choices apply to opening projects and batch export; individual export follows the visible tracks.
 
 Enable **Delivery folder** for a self-contained folder with stems, `Proyecto.rpp`, `Notes.txt`, instructions, export details, and SHA-256 checksums. Move or share the whole folder; REAPER uses relative media paths. This option always includes `.rpp`.
 

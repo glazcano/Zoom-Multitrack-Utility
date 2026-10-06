@@ -14,7 +14,8 @@ from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
 
 from .core import read_project, waveform, export_stems, ExportCancelled, rename_project, rename_track, title_settings, ProjectError, set_stereo_split, save_loop_range
 from .audio import Player
-from .dialogs import PreparationDialog, TemplatesDialog, show_report, LocateDialog, ExportOptionsDialog, LoopDialog, AboutDialog
+from .widgets import MeterFader, track_button, channel_button
+from .dialogs import PreparationDialog, TemplatesDialog, show_report, LocateDialog, ExportOptionsDialog, LoopDialog, AboutDialog, ExportDialog
 from .workflows import export_batch, analyze_project
 from .platforms import project_files
 from .preferences import Preferences, export_options, library_entry, matches_entry
@@ -69,6 +70,7 @@ class Timeline(QWidget):
         self.setFocusPolicy(Qt.StrongFocus)
         self.setToolTip(tr("Clic: mover cursor. Arrastrar: definir bucle. Arrastra un extremo ámbar para ajustarlo. Esc: cancelar."))
         self.controls = []
+        self.faders = []
         self.meter_values = []
         self.setMinimumSize(800, 360)
 
@@ -78,16 +80,19 @@ class Timeline(QWidget):
             widget.hide()
             widget.deleteLater()
         self.controls.clear()
+        self.faders = []
+        self.rename_controls = []
         for i, t in enumerate(project.tracks):
             y = self.TOP+i*self.ROW
-            mute, solo = QCheckBox('Mute', self), QCheckBox('Solo', self)
-            mute.setGeometry(18, y+53, 75, 28)
-            solo.setGeometry(100, y+53, 75, 28)
+            mute, solo = track_button('mute', tr('Silenciar'), self, True), track_button('solo', tr('Escuchar solo esta pista'), self, True)
+            mute.setGeometry(18, y+51, 30, 28)
+            solo.setGeometry(58, y+51, 30, 28)
             mute.setChecked(t.mute)
             solo.setChecked(t.solo)
             mute.toggled.connect(lambda value, track=t: setattr(track, 'mute', value))
             solo.toggled.connect(lambda value, track=t: setattr(track, 'solo', value))
-            gain = QSlider(Qt.Horizontal, self)
+            gain = MeterFader(self, Qt.Horizontal)
+            self.faders.append(gain)
             gain.setRange(-600, 60)
             gain.setValue(round(200*math.log10(max(t.gain, .001))))
             gain.setGeometry(18, y+88, 155, 22)
@@ -97,20 +102,21 @@ class Timeline(QWidget):
                 track.gain = 10**(v/200)
                 label.setText(f'{v/10:.1f} dB')
             gain.valueChanged.connect(change)
-            gain.setToolTip(tr('Volumen de escucha. No modifica los stems.'))
+
             for w in (mute, solo, gain, value):
                 w.show()
                 self.controls.append(w)
-            rename = QPushButton(tr('Nombre…'), self)
-            rename.setGeometry(172, y+8, 78, 29)
+            rename = track_button('rename', tr('Etiquetar esta pista con el nombre del instrumento'), self)
+            rename.setGeometry(172, y+8, 24, 24)
             rename.setStyleSheet('padding:3px;font-size:11px;')
             rename.setToolTip(tr('Etiquetar esta pista con el nombre del instrumento'))
             rename.clicked.connect(lambda checked=False, index=i: self.rename_requested.emit(index))
             rename.show()
             self.controls.append(rename)
+            self.rename_controls.append(rename)
             if t.channels == 2 or t.output_channel is not None:
-                channels = QPushButton('2 mono' if t.channels == 2 else tr('Estéreo'), self)
-                channels.setGeometry(178, y+45, 72, 30)
+                channels = channel_button(t, self)
+                channels.setGeometry(98, y+51, 30, 28)
                 channels.setStyleSheet('padding:3px;font-size:11px;')
                 channels.setToolTip(tr('Alternar una pista estéreo y dos pistas mono L/R; también afecta a los stems'))
                 channels.clicked.connect(lambda checked=False, index=i: self.split_requested.emit(index))
@@ -234,17 +240,13 @@ class Timeline(QWidget):
             p.fillRect(QRectF(0, y, 4, self.ROW-1), color)
             p.setPen(QColor('#eef4fb'))
             p.setFont(QFont(QApplication.font().family(), 11, QFont.DemiBold))
-            p.drawText(18, y+25, p.fontMetrics().elidedText(t.name, Qt.ElideRight, 146))
+            name = p.fontMetrics().elidedText(t.name, Qt.ElideRight, self.LEFT-60)
+            p.drawText(18, y+25, name)
+            if i < len(self.rename_controls):
+                self.rename_controls[i].setGeometry(22+p.fontMetrics().horizontalAdvance(name), y+7, 24, 24)
             p.setFont(QFont(QApplication.font().family(), 9))
             p.setPen(QColor('#8fa0b5'))
             p.drawText(18, y+44, tr('Estéreo · 2 canales') if t.channels == 2 else tr('Mono · 1 canal'))
-            peak = self.meter_values[i] if i < len(self.meter_values) else 0
-            db = 20*math.log10(peak) if peak > 0 else -90
-            p.fillRect(QRectF(18, y+120, 155, 6), QColor('#34465d'))
-            p.fillRect(QRectF(18, y+120, 155*max(0, min(1, (db+60)/60)), 6),
-                       QColor('#f5899e' if peak >= 1 else '#55d9b2'))
-            p.setPen(QColor('#f5899e' if peak >= 1 else '#8fa0b5'))
-            p.drawText(183, y+128, f'{db:.1f}' if peak else '−∞ dBFS')
             p.save()
             p.setClipRect(QRectF(self.LEFT, y, self.width()-self.LEFT, self.ROW))
             for c in t.clips:
@@ -297,13 +299,13 @@ class Timeline(QWidget):
 
 class Console(Timeline):
     """One strip per track, with a seekable waveform above a vertical fader."""
-    COLUMN = 240
+    COLUMN = 180
     WAVE_TOP, WAVE_BOTTOM = 76, 166
 
     def __init__(self):
         super().__init__()
         self.strips = []
-        self.setMinimumSize(240, 360)
+        self.setMinimumSize(180, 360)
 
     def set_project(self, project, peaks):
         self.project, self.peaks = project, peaks
@@ -311,26 +313,28 @@ class Console(Timeline):
             widget.hide()
             widget.deleteLater()
         self.controls.clear()
+        self.faders = []
         self.strips.clear()
         for i, track in enumerate(project.tracks):
-            mute, solo = QCheckBox('Mute', self), QCheckBox('Solo', self)
+            mute, solo = track_button('mute', tr('Silenciar'), self, True), track_button('solo', tr('Escuchar solo esta pista'), self, True)
             mute.setChecked(track.mute)
             solo.setChecked(track.solo)
             mute.toggled.connect(lambda value, t=track: setattr(t, 'mute', value))
             solo.toggled.connect(lambda value, t=track: setattr(t, 'solo', value))
-            fader = QSlider(Qt.Vertical, self)
+            fader = MeterFader(self)
+            self.faders.append(fader)
             fader.setRange(-600, 60)
             fader.setValue(round(200*math.log10(max(track.gain, .001))))
-            fader.setToolTip(tr('Volumen de escucha; no modifica los stems. Arriba: +6 dB; abajo: −60 dB.'))
+
             value = QLabel(f'{fader.value()/10:.1f} dB', self)
             value.setAlignment(Qt.AlignCenter)
             def change(v, t=track, label=value):
                 t.gain = 10**(v/200)
                 label.setText(f'{v/10:.1f} dB')
             fader.valueChanged.connect(change)
-            rename = QPushButton(tr('Nombre…'), self)
+            rename = track_button('rename', tr('Etiquetar esta pista con el nombre del instrumento'), self)
             rename.clicked.connect(lambda checked=False, index=i: self.rename_requested.emit(index))
-            channels = QPushButton('2 mono' if track.channels == 2 else tr('Estéreo'), self)
+            channels = channel_button(track, self)
             channels.setEnabled(track.channels == 2 or track.output_channel is not None)
             channels.clicked.connect(lambda checked=False, index=i: self.split_requested.emit(index))
             for w in (rename, channels):
@@ -340,19 +344,36 @@ class Console(Timeline):
             self.controls.extend(strip)
             for widget in strip:
                 widget.show()
-        self.setMinimumWidth(max(240, len(project.tracks)*self.COLUMN))
+        self.setMinimumWidth(max(180, len(project.tracks)*self.COLUMN))
         self.layout_strips()
         self.update()
 
     def layout_strips(self):
         for i, (mute, solo, fader, value, rename, channels) in enumerate(self.strips):
             x = i*self.COLUMN
-            rename.setGeometry(x+14, 40, 92, 28)
-            channels.setGeometry(x+130, 40, 96, 28)
-            mute.setGeometry(x+28, 190, 80, 28)
-            solo.setGeometry(x+135, 190, 80, 28)
-            fader.setGeometry(x+66, 234, 32, self.height()-282)
-            value.setGeometry(x+24, self.height()-32, 116, 25)
+            rename.setGeometry(x+140, 12, 24, 24)
+            mute.setGeometry(x+14, 40, 30, 28)
+            solo.setGeometry(x+56, 40, 30, 28)
+            channels.setGeometry(x+98, 40, 30, 28)
+            fader.setGeometry(x+58, 206, 30, max(40, self.height()-236))
+            value.setGeometry(x+24, self.height()-26, 116, 22)
+
+    def draw_fader_scale(self, painter, index):
+        if index >= len(self.strips):
+            return  # Channel layout is being rebuilt by the waveform job.
+        fader = self.strips[index][2]
+        top = fader.y()+fader.handle_rect().height()/2
+        height = fader.height()-fader.handle_rect().height()
+        painter.setPen(QColor('#8fa0b5'))
+        for level in (6, 0, -12, -24, -36, -48, -60):
+            painter.drawText(fader.x()+fader.width()+5, round(top+(6-level)/66*height+4), str(level))
+
+    def draw_track_name(self, painter, index, track):
+        x = index*self.COLUMN
+        name = painter.fontMetrics().elidedText(track.name, Qt.ElideRight, self.COLUMN-56)
+        painter.drawText(x+14, 28, name)
+        if index < len(self.strips):
+            self.strips[index][4].setGeometry(x+18+painter.fontMetrics().horizontalAdvance(name), 11, 24, 24)
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -379,7 +400,7 @@ class Console(Timeline):
             p.fillRect(QRectF(x+4, 4, self.COLUMN-8, 3), color)
             p.setFont(QFont(QApplication.font().family(), 11, QFont.DemiBold))
             p.setPen(QColor('#eef4fb'))
-            p.drawText(x+14, 28, p.fontMetrics().elidedText(track.name, Qt.ElideRight, width))
+            self.draw_track_name(p, i, track)
             p.setFont(QFont(QApplication.font().family(), 8))
             wave_rect = QRectF(x+14, self.WAVE_TOP, width, self.WAVE_BOTTOM-self.WAVE_TOP)
             p.fillRect(wave_rect, QColor('#111720'))
@@ -418,33 +439,21 @@ class Console(Timeline):
             p.setPen(QColor('#8fa0b5'))
             p.drawText(x+14, 182, clock_text(self.view_start/self.project.rate))
             p.drawText(QRectF(x+80, 166, width-66, 20), Qt.AlignRight, clock_text((self.view_start+self.span)/self.project.rate))
-            peak = self.meter_values[i] if i < len(self.meter_values) else 0
-            db = 20*math.log10(peak) if peak else -90
-            height = self.height()-282
-            p.fillRect(QRectF(x+148, 234, 18, height), QColor('#34465d'))
-            fill = height*max(0, min(1, (db+60)/60))
-            p.fillRect(QRectF(x+148, 234+height-fill, 18, fill), QColor('#f5899e' if peak >= 1 else '#55d9b2'))
-            p.setPen(QColor('#8fa0b5'))
-            for level in (0, -12, -24, -36, -48, -60):
-                p.drawText(x+174, int(238-level/60*height), str(level))
-            p.drawText(QRectF(x+134, self.height()-32, 95, 25), Qt.AlignCenter, f'{db:.1f} dBFS' if peak else '−∞ dBFS')
+            self.draw_fader_scale(p, i)
         p.end()
 
 
 class VerticalConsole(Console):
     """Shared sample timeline running down each channel strip."""
     def wave_rect(self, index):
-        return QRectF(index*self.COLUMN+14, 114, 118, max(1, self.height()-148))
+        return QRectF(index*self.COLUMN+14, 94, 80, max(1, self.height()-122))
 
     def layout_strips(self):
-        for i, (mute, solo, fader, value, rename, channels) in enumerate(self.strips):
+        super().layout_strips()
+        for i, (_, _, fader, value, _, _) in enumerate(self.strips):
             x = i*self.COLUMN
-            rename.setGeometry(x+14, 34, 92, 25)
-            channels.setGeometry(x+130, 34, 96, 25)
-            mute.setGeometry(x+16, 62, 84, 26)
-            solo.setGeometry(x+132, 62, 84, 26)
-            fader.setGeometry(x+145, 114, 30, self.height()-186)
-            value.setGeometry(x+136, self.height()-59, 96, 24)
+            fader.setGeometry(x+104, 94, 28, max(40, self.height()-122))
+            value.setGeometry(x+98, self.height()-25, 78, 22)
 
     def time_axis(self, point):
         if self.project:
@@ -467,11 +476,11 @@ class VerticalConsole(Console):
             p.fillRect(QRectF(x+4, 4, self.COLUMN-8, 3), color)
             p.setFont(QFont(QApplication.font().family(), 11, QFont.DemiBold))
             p.setPen(QColor('#eef4fb'))
-            p.drawText(x+14, 27, p.fontMetrics().elidedText(track.name, Qt.ElideRight, self.COLUMN-28))
+            self.draw_track_name(p, i, track)
             p.setFont(QFont(QApplication.font().family(), 8))
             p.setPen(QColor('#8fa0b5'))
-            p.drawText(x+14, 106, clock_text(self.view_start/self.project.rate)+' ↓')
-            p.drawText(QRectF(x+14, self.height()-28, 120, 22), Qt.AlignLeft, clock_text((self.view_start+self.span)/self.project.rate))
+            p.drawText(x+14, 87, clock_text(self.view_start/self.project.rate)+' ↓')
+            p.drawText(QRectF(x+14, self.height()-25, 84, 22), Qt.AlignLeft, clock_text((self.view_start+self.span)/self.project.rate))
             p.fillRect(rect, QColor('#111720'))
             p.save()
             p.setClipRect(rect)
@@ -491,7 +500,7 @@ class VerticalConsole(Console):
                         group = peaks[lo:hi]
                         yy = int(start+pixel*(end-start)/pixels)
                         center = rect.center().x()
-                        p.drawLine(int(center+group[:, 0].min()*50), yy, int(center+group[:, 1].max()*50), yy)
+                        p.drawLine(int(center+group[:, 0].min()*(rect.width()/2-4)), yy, int(center+group[:, 1].max()*(rect.width()/2-4)), yy)
                 if clip.missing:
                     p.drawText(QRectF(rect.left()+4, start+4, rect.width()-8, 36), Qt.TextWordWrap, tr('FALTA AUDIO'))
             if self.project.export_range:
@@ -510,16 +519,7 @@ class VerticalConsole(Console):
             p.setPen(QPen(QColor('#fff0c2'), 2))
             p.drawLine(int(rect.left()), cursor, int(rect.right()), cursor)
             p.restore()
-            peak = self.meter_values[i] if i < len(self.meter_values) else 0
-            db = 20*math.log10(peak) if peak else -90
-            height = self.height()-186
-            p.fillRect(QRectF(x+188, 114, 12, height), QColor('#34465d'))
-            fill = height*max(0, min(1, (db+60)/60))
-            p.fillRect(QRectF(x+188, 114+height-fill, 12, fill), QColor('#f5899e' if peak >= 1 else '#55d9b2'))
-            p.setPen(QColor('#8fa0b5'))
-            for level in (0, -12, -24, -36, -48, -60):
-                p.drawText(x+204, int(118-level/60*height), str(level))
-            p.drawText(QRectF(x+136, self.height()-30, 96, 24), Qt.AlignCenter, f'{db:.1f} dBFS' if peak else '−∞ dBFS')
+            self.draw_fader_scale(p, i)
         p.end()
 
 
@@ -627,10 +627,6 @@ class Window(QMainWindow):
         self.batch_button = QPushButton(tr('Exportar lote marcado…'))
         self.batch_button.clicked.connect(self.batch_dialog)
         sl.addWidget(self.batch_button)
-        hint = QLabel(tr('Doble clic: abrir · casillas: lote'))
-        hint.setWordWrap(True)
-        hint.setStyleSheet('color:#8fa0b5;font-size:12px')
-        sl.addWidget(hint)
         split.addWidget(side)
         main = QWidget()
         ml = QVBoxLayout(main)
@@ -674,7 +670,10 @@ class Window(QMainWindow):
         self.time_label = QLabel('00:00:00.000 / 00:00:00.000')
         self.time_label.setFont(QFontDatabase.systemFont(QFontDatabase.FixedFont))
         self.time_label.setStyleSheet('font-size:12px;color:#fff0c2')
-        title_row.addWidget(self.time_label)
+        self.loop_label = QLabel('')
+        self.loop_label.setStyleSheet('font-size:12px;color:#f4c276')
+        self.loop_label.setToolTip(tr('Definir el tramo del bucle'))
+        title_row.addWidget(self.loop_label)
         self.loop_button = QCheckBox(tr('Bucle'))
         self.loop_button.setToolTip(tr('Repite el tramo del bucle o toda la toma. Usa A–B para definir inicio y fin.'))
         self.loop_button.toggled.connect(lambda value: setattr(self.player, 'loop', value))
@@ -756,43 +755,44 @@ class Window(QMainWindow):
             view.loop_selected.connect(self.set_loop_selection)
             view.loop_edit_started.connect(self.player.pause)
 
-        bottom = QHBoxLayout()
-        bottom.addWidget(QLabel(tr('Escucha')))
+        self.monitor_panel = QWidget()
+        monitor = QVBoxLayout(self.monitor_panel)
+        monitor.setContentsMargins(8, 6, 8, 6)
+        monitor.setSpacing(4)
+        monitor.addWidget(QLabel(tr('Escucha')))
+        level_row = QHBoxLayout()
         self.master = QSlider(Qt.Horizontal)
         self.master.setRange(-600, 0)
         self.master.setValue(-60)
-        self.master.setMaximumWidth(120)
-        self.master.valueChanged.connect(lambda v: setattr(self.player, 'master', 10**(v/200)))
+        self.master.setAccessibleName(tr('Volumen de escucha'))
+        self.master_value = QLabel('-6.0 dB')
+        self.master.valueChanged.connect(lambda v: (setattr(self.player, 'master', 10**(v/200)), self.master_value.setText(f'{v/10:.1f} dB')))
         self.player.master = 10**(-60/200)
-        bottom.addWidget(self.master)
+        level_row.addWidget(self.master, 1)
+        level_row.addWidget(self.master_value)
+        monitor.addLayout(level_row)
+        monitor_row = QHBoxLayout()
         self.meter = QLabel('−∞ dBFS')
-        self.meter.setMinimumWidth(105)
-        bottom.addWidget(self.meter)
+        monitor_row.addWidget(self.meter)
         self.center_mono = QCheckBox(tr('Mono centrado'))
         self.center_mono.setToolTip(tr('Escuchar los canales mono L/R por ambos altavoces. Solo monitoreo.'))
         self.center_mono.toggled.connect(lambda value: setattr(self.player, 'center_mono', value))
-        bottom.addWidget(self.center_mono)
-        bottom.addStretch()
-        self.rpp = QCheckBox(tr('Crear .rpp'))
-        self.rpp.setChecked(True)
-        self.format = QComboBox()
-        self.format.addItems(['WAV · 24 bits', 'FLAC · 24 bits'])
+        monitor_row.addWidget(self.center_mono)
+        monitor.addLayout(monitor_row)
+        monitor.addWidget(self.time_label)
+        sl.insertWidget(0, self.monitor_panel)
+        self._export_options = export_options({})
         self.export_button = QPushButton(tr('Exportar…'))
         self.export_button.setObjectName('primary')
         self.export_button.clicked.connect(self.export_dialog)
-        bottom.addWidget(self.export_button)
-        ml.addLayout(bottom)
-        self.options_button = QPushButton(tr('Exportación y presets…'))
-        self.options_button.clicked.connect(self.options_dialog)
-        self.export_menu = compact_menu(tr('Exportación'), (self.format, self.rpp, self.options_button), self)
-        bottom.insertWidget(bottom.count()-1, self.export_menu)
-        self.options_summary = QLabel('', self)
-        self.options_summary.hide()
+        toolbar.insertWidget(toolbar.indexOf(self.about_button)+1, self.export_button)
         self.meter.setToolTip(tr('Pico de escucha en dBFS. Los medidores de pista muestran el pico de entrada.'))
         split.addWidget(main)
         split.setSizes([220, 1050])
         layout.addWidget(split, 1)
-        status = QHBoxLayout()
+        self.status_panel = QWidget()
+        status = QHBoxLayout(self.status_panel)
+        status.setContentsMargins(0, 0, 0, 0)
         self.status = QLabel(tr('Listo'))
         self.progress = QProgressBar()
         self.progress.setMaximumWidth(200)
@@ -803,7 +803,8 @@ class Window(QMainWindow):
         status.addWidget(self.status, 1)
         status.addWidget(self.progress)
         status.addWidget(self.cancel_button)
-        layout.addLayout(status)
+        layout.addWidget(self.status_panel)
+        self.status_panel.hide()
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.tick)
         self.timer.start(60)
@@ -857,7 +858,7 @@ class Window(QMainWindow):
 
     def set_busy(self, busy):
         self.locate_button.setEnabled(not busy and self.project is not None and bool(missing_sources(self.project)))
-        self.options_button.setEnabled(not busy)
+        self.status_panel.setVisible(busy)
         self.loop_button.setEnabled(not busy and self.project is not None)
         self.loop_range_button.setEnabled(not busy and self.project is not None)
         self.about_button.setEnabled(not busy)
@@ -880,26 +881,19 @@ class Window(QMainWindow):
         self.stop_button.setEnabled(not busy and self.project is not None)
 
     def current_export_options(self):
-        return dict(format=('WAV', 'FLAC')[self.format.currentIndex()],
-                    channels=self.channel_mode.currentIndex(), rpp=self.rpp.isChecked(),
-                    portable=self.portable_delivery, naming=self.export_naming)
+        return self._export_options | dict(channels=self.channel_mode.currentIndex())
 
     def apply_export_options(self, options):
-        options = export_options(options)
-        self.format.setCurrentIndex(0 if options['format'] == 'WAV' else 1)
-        self.channel_mode.setCurrentIndex(options['channels'])
-        self.rpp.setChecked(options['rpp'])
-        self.portable_delivery, self.export_naming = options['portable'], options['naming']
-        self.options_summary.setText(tr('Entrega portátil: .rpp, notas y checksums incluidos') if options['portable']
-                                     else tr('Stems · nombres ')+(tr('por instrumento') if options['naming'] == 'track' else tr('con prefijo de proyecto')))
-        self.export_menu.setToolTip(self.options_summary.text())
+        self._export_options = export_options(options)
+        self.channel_mode.setCurrentIndex(self._export_options['channels'])
+        self.portable_delivery = self._export_options['portable']
+        self.export_naming = self._export_options['naming']
 
     def options_dialog(self):
-        if self.job:
-            return
-        dialog = ExportOptionsDialog(self.preferences, self.current_export_options(), self)
-        if dialog.exec():
-            self.apply_export_options(dialog.options())
+        if not self.job:
+            dialog = ExportOptionsDialog(self.preferences, self.current_export_options(), self)
+            if dialog.exec():
+                self.apply_export_options(dialog.options())
 
     def restore_controls(self):
         try:
@@ -1016,7 +1010,9 @@ class Window(QMainWindow):
                 item.setData(Qt.UserRole+1, library_entry(p.path))
         a, b = p.export_range or (0, p.length)
         self.subtitle.setText(tr('{0} pistas · {1:g} kHz · Exportar {2} → {3}', len(p.tracks), p.rate / 1000, clock_text(a / p.rate), clock_text(b / p.rate)))
-        self.timeline.update()
+        for view in (self.timeline, self.console, self.vertical_console):
+            view.update()
+        self.refresh_loop_label()
         self.filter_library()
         self.loop_button.setEnabled(not self.job)
         self.loop_range_button.setEnabled(not self.job)
@@ -1068,11 +1064,13 @@ class Window(QMainWindow):
         if not paths:
             self.job_error(tr('Marca las casillas de los proyectos que quieres exportar.'))
             return
-        folder = QFileDialog.getExistingDirectory(self, tr('Exportar {0} proyectos: destino del lote', len(paths)), str(self.library_root or Path.home()))
-        if not folder:
+        dialog = ExportDialog(self.preferences, self.current_export_options(), self.library_root or Path.home(), self, batch=True)
+        if not dialog.exec():
             return
+        self.apply_export_options(dialog.options())
+        folder = dialog.destination.text().strip()
         self.player.pause()
-        fmt, rpp = ('WAV' if self.format.currentIndex() == 0 else 'FLAC'), self.rpp.isChecked()
+        fmt, rpp = self._export_options['format'], self._export_options['rpp']
         split_stereo = self.selected_channel_mode()
         portable, naming = self.portable_delivery, self.export_naming
         self.status.setText(tr('Exportando {0} proyectos con sus tramos guardados…', len(paths)))
@@ -1344,12 +1342,22 @@ class Window(QMainWindow):
             except Exception as exc:
                 self.job_error(str(exc))
 
+    def refresh_loop_label(self):
+        if self.project:
+            view = (self.timeline, self.console, self.vertical_console)[self.view_mode.currentIndex()]
+            a, b = view.displayed_loop or (0, self.project.length)
+            text = tr('Tramo del bucle {0} → {1}', clock_text(a/self.project.rate), clock_text(b/self.project.rate))
+            self.loop_label.setText(text)
+
     def tick(self):
         self.play_button.setText(tr('Ⅱ  Pausa') if self.player.playing else tr('▶  Reproducir'))
         if self.project:
+            self.refresh_loop_label()
             self.time_label.setText(f'{clock_text(self.player.position/self.project.rate)} / {clock_text(self.project.length/self.project.rate)}')
             view = (self.timeline, self.console, self.vertical_console)[self.view_mode.currentIndex()]
             meters = [t.peak if self.player.playing else 0 for t in self.project.tracks]
+            for fader, peak in zip(view.faders, meters):
+                fader.set_peak(peak)
             if view.position != self.player.position or view.meter_values != meters:
                 view.position = self.player.position
                 view.meter_values = meters
@@ -1365,12 +1373,14 @@ class Window(QMainWindow):
     def export_dialog(self):
         if not self.project or self.job:
             return
-        folder = QFileDialog.getExistingDirectory(self, tr('Destino: se creará una carpeta nueva para los stems'), str(self.project.path.parent.parent))
-        if not folder:
+        dialog = ExportDialog(self.preferences, self.current_export_options(), self.project.path.parent.parent, self)
+        if not dialog.exec():
             return
+        self.apply_export_options(dialog.options())
+        folder = dialog.destination.text().strip()
         self.player.pause()
-        fmt = 'WAV' if self.format.currentIndex() == 0 else 'FLAC'
-        create_rpp = self.rpp.isChecked()
+        fmt = self._export_options['format']
+        create_rpp = self._export_options['rpp']
         portable, naming = self.portable_delivery, self.export_naming
         self.status.setText(tr('Exportando stems {0} a 24 bits…', fmt))
         self.start_job(lambda job: export_stems(self.project, Path(folder), fmt, job.progress.emit, job.cancel, create_rpp=create_rpp, portable=portable, naming=naming),

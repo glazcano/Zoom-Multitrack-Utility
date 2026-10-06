@@ -1,9 +1,11 @@
-## H8 Studio 0.9.0
+## H8 Studio 0.10.0
 
-- Compact header: project menus and playback controls share one action row; project title, metadata, and time share the row below.
-- Drag a waveform or timeline ruler to select a loop in any view. Drag an amber boundary to resize it; press Esc to cancel. A click still seeks. Export ranges are unchanged.
-- Shared zoom from ×0.1 to ×50, with a logarithmic dial and precise numeric entry. ×1 fits the whole take; a time scrollbar navigates the enlarged audio without resizing track controls.
-- Saved zoom settings migrate from the previous four-step selector.
+- Implements the approved compact layout: Export in the top row, monitoring above the project library, and no idle footer text.
+- Destination, WAV/FLAC format, presets, REAPER, and portable delivery options are now in the export dialog for individual and batch exports.
+- Pencil icons beside track names and compact mute, solo, and channel buttons with translated tooltips and accessible names.
+- Input metering and monitor gain share a single slider control in every view; meter activity remains independent of gain.
+- Narrower console strips and vertical waveforms use the full viewer height, with time and gain readouts at the bottom.
+- A separate Loop region label identifies the saved playback range, independently of the export range.
 
 Download the package for Windows x64, Fedora 43 x64, macOS Apple Silicon, or macOS Intel.
 Extract the package and keep all its contents together. Fedora requires the libraries in the platform guide.

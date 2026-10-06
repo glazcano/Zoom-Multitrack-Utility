@@ -13,7 +13,7 @@ def verify(project_path, report_path, audio=True):
         from PySide6.QtWidgets import QApplication
         from .core import read_project, export_stems
         from .ui import Window, STYLE
-        from .dialogs import AboutDialog
+        from .dialogs import AboutDialog, ExportDialog
         app = QApplication([])
         app.setStyle('Fusion')
         app.setStyleSheet(STYLE)
@@ -27,6 +27,15 @@ def verify(project_path, report_path, audio=True):
         about = AboutDialog(window.preferences, window)
         assert about.windowTitle() == 'About H8 Studio'
         about.close()
+        dialog = ExportDialog(window.preferences, window.current_export_options(), report_path.parent, window)
+        dialog.format.setCurrentText('FLAC')
+        assert dialog.options()['format'] == 'FLAC'
+        dialog.close()
+        window.view_mode.setCurrentIndex(2)
+        for strip in window.vertical_console.strips:
+            assert not strip[0].icon().isNull()
+            strip[2].set_peak(.5)
+        assert not window.vertical_console.grab().isNull()
         assert window.loop_button.isEnabled() and window.loop_range_button.isEnabled()
         project.loop_range = (15, 22)
         window.player.loop = True
@@ -59,7 +68,7 @@ def verify(project_path, report_path, audio=True):
                     assert np.array_equal(source[a:b], target)
         window.close()
         report = {'ok': True, 'project': project.name, 'checks': [
-            'packaged imports and DLLs', 'Qt window, waveform and About dependencies', 'short loop callback', 'WAV and FLAC lossless roundtrip',
+            'packaged imports and DLLs', 'Qt window, waveform and About dependencies', 'export dialog, icons and combined meter/faders', 'short loop callback', 'WAV and FLAC lossless roundtrip',
             'silent playback, pause and seek' if audio else 'audio device test SKIPPED', 'clean shutdown']}
         report_path.write_text(json.dumps(report, indent=2), encoding='utf-8')
         return 0
