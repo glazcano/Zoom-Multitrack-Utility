@@ -1,6 +1,11 @@
 name: Native desktop packages
 on:
   workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - h8studio/__init__.py
+      - .github/workflows/native-packages.yml
 permissions:
   contents: read
 jobs:
