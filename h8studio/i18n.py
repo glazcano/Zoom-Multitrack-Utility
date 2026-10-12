@@ -16,7 +16,11 @@ def tr(source, *values):
     return text.format(*values) if values else text
 
 
-EN = {'01_Instrumento.wav': '01_Instrument.wav',
+EN = {'Doble clic: volver a 0 dB. Pico retenido: 1,2 s; saturación: 2 s.': 'Double click: reset to 0 dB. Peak hold: 1.2 s; clipping: 2 s.',
+ 'Mono · {0}': 'Mono · {0}',
+ 'Analizar…': 'Analyze…',
+ 'Analizar tomas marcadas o la toma abierta: audio faltante, silencio, nivel bajo y posible saturación.': 'Analyze checked takes or the open take: missing audio, silence, low level and possible clipping.',
+ '01_Instrumento.wav': '01_Instrument.wav',
  '0:00  ↓ tiempo': '0:00  ↓ time',
  'Abre un archivo .h8prj con sus WAV en la misma carpeta.': 'Open an .h8prj file with its WAV files in the '
                                                             'same folder.',

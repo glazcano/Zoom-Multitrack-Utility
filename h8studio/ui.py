@@ -109,7 +109,7 @@ class Timeline(QWidget):
             rename = track_button('rename', tr('Etiquetar esta pista con el nombre del instrumento'), self)
             rename.setGeometry(172, y+8, 24, 24)
             rename.setStyleSheet('padding:3px;font-size:11px;')
-            rename.setToolTip(tr('Etiquetar esta pista con el nombre del instrumento'))
+            rename.setToolTip(t.name+'\n'+tr('Etiquetar esta pista con el nombre del instrumento'))
             rename.clicked.connect(lambda checked=False, index=i: self.rename_requested.emit(index))
             rename.show()
             self.controls.append(rename)
@@ -246,7 +246,7 @@ class Timeline(QWidget):
                 self.rename_controls[i].setGeometry(22+p.fontMetrics().horizontalAdvance(name), y+7, 24, 24)
             p.setFont(QFont(QApplication.font().family(), 9))
             p.setPen(QColor('#8fa0b5'))
-            p.drawText(18, y+44, tr('Estéreo · 2 canales') if t.channels == 2 else tr('Mono · 1 canal'))
+            p.drawText(18, y+44, Console.channel_description(t))
             p.save()
             p.setClipRect(QRectF(self.LEFT, y, self.width()-self.LEFT, self.ROW))
             for c in t.clips:
@@ -297,15 +297,49 @@ class Timeline(QWidget):
         p.end()
 
 
+class ConsoleMixer(QWidget):
+    """Scroll channels independently, keeping the waveform time axis visible."""
+    def __init__(self, console):
+        super().__init__()
+        self.console = console
+        self.setMouseTracking(True)
+
+    def paintEvent(self, event):
+        self.console.paint_mixer(self)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self.console.layout_strips()
+
+    def mouseMoveEvent(self, event):
+        project = self.console.project
+        index = int(event.position().x()//self.console.COLUMN)
+        if project and 0 <= index < len(project.tracks):
+            track = project.tracks[index]
+            self.setToolTip(track.name+' · '+self.console.channel_description(track))
+        super().mouseMoveEvent(event)
+
+
 class Console(Timeline):
-    """One strip per track, with a seekable waveform above a vertical fader."""
-    COLUMN = 180
-    WAVE_TOP, WAVE_BOTTOM = 76, 166
+    """Aligned horizontal waveforms above a compact monitoring mixer."""
+    COLUMN = 160
+    LEFT = 150
 
     def __init__(self):
         super().__init__()
         self.strips = []
-        self.setMinimumSize(180, 360)
+        self.channel_labels = []
+        self.mixer_area = None
+        if type(self) is Console:
+            self.mixer = ConsoleMixer(self)
+            self.mixer_area = QScrollArea(self)
+            self.mixer_area.setFrameShape(QScrollArea.NoFrame)
+            self.mixer_area.setWidgetResizable(True)
+            self.mixer_area.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+            self.mixer_area.setWidget(self.mixer)
+            self.mixer_area.hide()
+        self.setMouseTracking(True)
+        self.setMinimumSize(650, 460)
 
     def set_project(self, project, peaks):
         self.project, self.peaks = project, peaks
@@ -315,26 +349,35 @@ class Console(Timeline):
         self.controls.clear()
         self.faders = []
         self.strips.clear()
+        self.channel_labels.clear()
+        parent = self.mixer if self.mixer_area else self
         for i, track in enumerate(project.tracks):
-            mute, solo = track_button('mute', tr('Silenciar'), self, True), track_button('solo', tr('Escuchar solo esta pista'), self, True)
+            mute, solo = track_button('mute', tr('Silenciar'), parent, True), track_button('solo', tr('Escuchar solo esta pista'), parent, True)
             mute.setChecked(track.mute)
             solo.setChecked(track.solo)
             mute.toggled.connect(lambda value, t=track: setattr(t, 'mute', value))
             solo.toggled.connect(lambda value, t=track: setattr(t, 'solo', value))
-            fader = MeterFader(self)
+            fader = MeterFader(parent)
             self.faders.append(fader)
             fader.setRange(-600, 60)
             fader.setValue(round(200*math.log10(max(track.gain, .001))))
 
-            value = QLabel(f'{fader.value()/10:.1f} dB', self)
+            value = QLabel(f'{fader.value()/10:.1f} dB', parent)
             value.setAlignment(Qt.AlignCenter)
             def change(v, t=track, label=value):
                 t.gain = 10**(v/200)
                 label.setText(f'{v/10:.1f} dB')
             fader.valueChanged.connect(change)
-            rename = track_button('rename', tr('Etiquetar esta pista con el nombre del instrumento'), self)
+            rename = track_button('rename', tr('Etiquetar esta pista con el nombre del instrumento'), parent)
             rename.clicked.connect(lambda checked=False, index=i: self.rename_requested.emit(index))
-            channels = channel_button(track, self)
+            rename.setToolTip(track.name+' · '+self.channel_description(track)+'\n'+rename.toolTip())
+            label = QLabel(self.channel_description(track), parent)
+            label.setStyleSheet('color:#8fa0b5;font-size:11px;')
+            label.setToolTip(track.name+' · '+self.channel_description(track))
+            label.show()
+            self.channel_labels.append(label)
+            self.controls.append(label)
+            channels = channel_button(track, parent)
             channels.setEnabled(track.channels == 2 or track.output_channel is not None)
             channels.clicked.connect(lambda checked=False, index=i: self.split_requested.emit(index))
             for w in (rename, channels):
@@ -344,19 +387,56 @@ class Console(Timeline):
             self.controls.extend(strip)
             for widget in strip:
                 widget.show()
-        self.setMinimumWidth(max(180, len(project.tracks)*self.COLUMN))
+        self.setMinimumWidth(650)
+        self.setMinimumHeight(max(460, 300+len(project.tracks)*26))
+        if self.mixer_area:
+            self.mixer.setMinimumWidth(max(160, len(project.tracks)*self.COLUMN))
+            self.mixer_area.show()
         self.layout_strips()
         self.update()
 
+    @staticmethod
+    def channel_description(track):
+        if track.output_channel is not None:
+            return tr('Mono · {0}', ('L', 'R')[track.output_channel])
+        return tr('Estéreo · 2 canales') if track.channels == 2 else tr('Mono · 1 canal')
+
+    def refresh_labels(self):
+        if not self.project:
+            return
+        for i, track in enumerate(self.project.tracks):
+            if i < len(self.strips):
+                title = track.name+' · '+self.channel_description(track)
+                self.channel_labels[i].setText(self.channel_description(track))
+                self.channel_labels[i].setToolTip(title)
+                self.strips[i][4].setToolTip(title+'\n'+tr('Etiquetar esta pista con el nombre del instrumento'))
+        if self.mixer_area:
+            self.mixer.update()
+
+    @property
+    def mixer_top(self):
+        return max(190, self.height()-260)
+
+    def wave_rect(self, index):
+        count = max(1, len(self.project.tracks)) if self.project else 1
+        row = (self.mixer_top-42)/count
+        return QRectF(self.LEFT, 34+index*row, max(1, self.width()-self.LEFT-18), max(1, row-4))
+
     def layout_strips(self):
+        if self.mixer_area:
+            self.mixer_area.setGeometry(0, self.mixer_top, self.width(), self.height()-self.mixer_top)
         for i, (mute, solo, fader, value, rename, channels) in enumerate(self.strips):
-            x = i*self.COLUMN
-            rename.setGeometry(x+140, 12, 24, 24)
-            mute.setGeometry(x+14, 40, 30, 28)
-            solo.setGeometry(x+56, 40, 30, 28)
-            channels.setGeometry(x+98, 40, 30, 28)
-            fader.setGeometry(x+58, 206, 30, max(40, self.height()-236))
-            value.setGeometry(x+24, self.height()-26, 116, 22)
+            x, top = i*self.COLUMN, 0
+            rename.setGeometry(x+self.COLUMN-32, top+8, 24, 24)
+            self.channel_labels[i].setGeometry(x+14, top+32, self.COLUMN-24, 18)
+            mute.setGeometry(x+14, top+55, 30, 28)
+            solo.setGeometry(x+54, top+55, 30, 28)
+            channels.setGeometry(x+94, top+55, 30, 28)
+            height = self.mixer_area.viewport().height() if self.mixer_area else 260
+            fader.setGeometry(x+58, top+96, 30, max(40, height-124))
+            value.setGeometry(x+14, height-26, self.COLUMN-28, 22)
+        if self.mixer_area:
+            self.mixer.update()
 
     def draw_fader_scale(self, painter, index):
         if index >= len(self.strips):
@@ -380,79 +460,153 @@ class Console(Timeline):
         self.layout_strips()
 
     def time_axis(self, point):
-        if not self.project or not self.WAVE_TOP <= point.y() <= self.WAVE_BOTTOM:
-            return
-        index = int(point.x()//self.COLUMN)
-        origin = index*self.COLUMN+14
-        if 0 <= index < len(self.project.tracks) and origin <= point.x() <= origin+self.COLUMN-28:
-            return point.x(), origin, self.COLUMN-28
+        if self.project and self.LEFT <= point.x() <= self.width()-18 and 0 <= point.y() < self.mixer_top-8:
+            return point.x(), self.LEFT, self.width()-self.LEFT-18
+
+    def mouseMoveEvent(self, event):
+        if self.project and self.drag_origin is None:
+            point = event.position()
+            if point.y() >= self.mixer_top:
+                index = int(point.x()//self.COLUMN)
+            else:
+                count = len(self.project.tracks)
+                index = int((point.y()-34)/max(1, (self.mixer_top-42)/max(1, count))) if point.y() >= 34 else -1
+            if 0 <= index < len(self.project.tracks):
+                track = self.project.tracks[index]
+                self.setToolTip(track.name+' · '+self.channel_description(track)+'\n'+tr('Clic: mover cursor. Arrastrar: definir bucle. Arrastra un extremo ámbar para ajustarlo. Esc: cancelar.'))
+            else:
+                self.setToolTip(tr('Clic: mover cursor. Arrastrar: definir bucle. Arrastra un extremo ámbar para ajustarlo. Esc: cancelar.'))
+        super().mouseMoveEvent(event)
 
     def paintEvent(self, event):
         if not self.project:
-            return super().paintEvent(event)
+            return Timeline.paintEvent(self, event)
         p = QPainter(self)
         p.fillRect(self.rect(), QColor('#111720'))
-        duration = self.span
-        width = self.COLUMN-28
+        first_rect = self.wave_rect(0)
+        left, width = first_rect.left(), first_rect.width()
+        x_for = lambda sample: left+self.fraction(sample)*width
+        duration = self.span/self.project.rate
+        desired = duration/max(1, width/105)
+        steps = [.1, .25, .5, 1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 1800, 3600]
+        step = next((v for v in steps if v >= desired), max(3600, desired))
+        p.setFont(QFont(QApplication.font().family(), 8))
+        p.save()
+        p.setClipRect(QRectF(left, 0, width, self.mixer_top-8))
+        first = math.ceil(self.view_start/self.project.rate/step)
+        for n in range(first, first+int(duration/step)+1):
+            sec = n*step
+            x = x_for(sec*self.project.rate)
+            p.setPen(QColor('#283342'))
+            p.drawLine(round(x), 28, round(x), self.mixer_top-8)
+            p.setPen(QColor('#8fa0b5'))
+            label = clock_text(sec) if step < 1 else clock_text(sec)[:-4]
+            p.drawText(QRectF(x+3, 2, 102, 22), Qt.AlignLeft, label)
+        p.restore()
         for i, track in enumerate(self.project.tracks):
-            x, color = i*self.COLUMN, QColor(COLORS[i%len(COLORS)])
-            p.fillRect(QRectF(x+4, 4, self.COLUMN-8, self.height()-8), QColor('#1a2330'))
-            p.fillRect(QRectF(x+4, 4, self.COLUMN-8, 3), color)
-            p.setFont(QFont(QApplication.font().family(), 11, QFont.DemiBold))
+            rect = self.wave_rect(i)
+            color = QColor(COLORS[i%len(COLORS)])
+            p.fillRect(QRectF(4, rect.top(), self.LEFT-10, rect.height()), QColor('#1a2330'))
+            p.fillRect(QRectF(4, rect.top(), 3, rect.height()), color)
             p.setPen(QColor('#eef4fb'))
-            self.draw_track_name(p, i, track)
-            p.setFont(QFont(QApplication.font().family(), 8))
-            wave_rect = QRectF(x+14, self.WAVE_TOP, width, self.WAVE_BOTTOM-self.WAVE_TOP)
-            p.fillRect(wave_rect, QColor('#111720'))
+            p.setFont(QFont(QApplication.font().family(), 9, QFont.DemiBold))
+            name = p.fontMetrics().elidedText(track.name, Qt.ElideRight, self.LEFT-26)
+            p.drawText(QRectF(14, rect.top(), self.LEFT-24, rect.height()), Qt.AlignVCenter, name)
             p.save()
-            p.setClipRect(wave_rect)
+            p.setClipRect(rect)
             for clip in track.clips:
-                start = x+14+(clip.start-self.view_start)/duration*width
-                end = x+14+(clip.start+clip.frames-self.view_start)/duration*width
-                rect = QRectF(start, self.WAVE_TOP, max(1, end-start), wave_rect.height())
-                p.fillRect(rect, QColor('#482b35') if clip.missing else QColor('#223d40'))
+                start, end = x_for(clip.start), x_for(clip.start+clip.frames)
+                if end <= start or end < rect.left() or start > rect.right():
+                    continue
+                p.fillRect(QRectF(start, rect.top(), max(1, end-start), rect.height()),
+                           QColor('#482b35') if clip.missing else QColor('#22313d'))
                 p.setPen(QColor('#ed8795') if clip.missing else color)
-                p.drawText(QRectF(start+4, self.WAVE_TOP+4, max(1, end-start-8), 22), Qt.AlignLeft,
-                           tr('FALTA AUDIO') if clip.missing else clip.path.name)
                 peaks = self.peaks.get((str(clip.path), clip.channel))
                 if peaks is None:
                     peaks = self.peaks.get(str(clip.path))
                 if peaks is not None and len(peaks):
-                    pixels = max(1, min(len(peaks), int(end-start)))
-                    for pixel in range(pixels):
-                        lo, hi = pixel*len(peaks)//pixels, (pixel+1)*len(peaks)//pixels
+                    # Aggregate only the visible source intervals; zoom does not
+                    # increase paint work beyond the width of the viewport.
+                    for pixel in range(max(0, math.floor(start-left)), min(math.ceil(width), math.ceil(end-left))):
+                        lo = max(0, min(len(peaks)-1, int((left+pixel-start)/(end-start)*len(peaks))))
+                        hi = max(lo+1, min(len(peaks), math.ceil((left+pixel+1-start)/(end-start)*len(peaks))))
                         group = peaks[lo:hi]
-                        xx = int(start+pixel*(end-start)/pixels)
-                        p.drawLine(xx, int(134-group[:, 1].max()*25), xx, int(134-group[:, 0].min()*25))
-            if self.project.export_range:
-                a, b = self.project.export_range
-                p.fillRect(QRectF(x+14+(a-self.view_start)/duration*width, self.WAVE_TOP, (b-a)/duration*width, 4), QColor('#55d9b2'))
-            if self.displayed_loop:
-                a, b = self.displayed_loop
-                p.fillRect(QRectF(x+14+(a-self.view_start)/duration*width, self.WAVE_TOP+6, (b-a)/duration*width, 4), QColor('#f4c276'))
-                for endpoint in (a, b):
-                    p.fillRect(QRectF(x+14+self.fraction(endpoint)*width-2, self.WAVE_TOP, 4, wave_rect.height()), QColor('#f4c276'))
-            cursor = int(x+14+(self.position-self.view_start)/duration*width)
-            p.setPen(QPen(QColor('#fff0c2'), 2))
-            p.drawLine(cursor, self.WAVE_TOP, cursor, self.WAVE_BOTTOM)
+                        center, amp = rect.center().y(), max(1, rect.height()/2-5)
+                        p.drawLine(round(left+pixel), round(center-float(group[:, 1].max())*amp),
+                                   round(left+pixel), round(center-float(group[:, 0].min())*amp))
+                if clip.missing:
+                    p.drawText(rect.adjusted(5, 0, -5, 0), Qt.AlignVCenter, tr('FALTA AUDIO'))
             p.restore()
-            p.setPen(QColor('#8fa0b5'))
-            p.drawText(x+14, 182, clock_text(self.view_start/self.project.rate))
-            p.drawText(QRectF(x+80, 166, width-66, 20), Qt.AlignRight, clock_text((self.view_start+self.span)/self.project.rate))
+        p.save()
+        p.setClipRect(QRectF(left, 0, width, self.mixer_top-8))
+        if self.project.export_range:
+            a, b = self.project.export_range
+            p.fillRect(QRectF(x_for(a), 28, x_for(b)-x_for(a), 4), QColor('#55d9b2'))
+        if self.displayed_loop:
+            a, b = self.displayed_loop
+            shade = QColor('#f4c276')
+            shade.setAlpha(24)
+            p.fillRect(QRectF(x_for(a), 34, x_for(b)-x_for(a), self.mixer_top-42), shade)
+            p.fillRect(QRectF(x_for(a), 23, x_for(b)-x_for(a), 4), QColor('#f4c276'))
+            for endpoint in (a, b):
+                p.fillRect(QRectF(x_for(endpoint)-2, 23, 4, self.mixer_top-31), QColor('#f4c276'))
+        p.setPen(QPen(QColor('#fff0c2'), 2))
+        p.drawLine(round(x_for(self.position)), 28, round(x_for(self.position)), self.mixer_top-8)
+        p.restore()
+        p.end()
+
+    def paint_mixer(self, widget):
+        p = QPainter(widget)
+        p.fillRect(widget.rect(), QColor('#111720'))
+        if not self.project:
+            p.end()
+            return
+        for i, track in enumerate(self.project.tracks):
+            x, top = i*self.COLUMN, 0
+            color = QColor(COLORS[i%len(COLORS)])
+            p.fillRect(QRectF(x+4, top, self.COLUMN-8, widget.height()-4), QColor('#1a2330'))
+            p.fillRect(QRectF(x+4, top, self.COLUMN-8, 3), color)
+            p.setFont(QFont(QApplication.font().family(), 10, QFont.DemiBold))
+            p.setPen(QColor('#eef4fb'))
+            name = p.fontMetrics().elidedText(track.name, Qt.ElideRight, self.COLUMN-54)
+            p.drawText(x+14, top+26, name)
+            p.setFont(QFont(QApplication.font().family(), 8))
             self.draw_fader_scale(p, i)
         p.end()
 
 
 class VerticalConsole(Console):
     """Shared sample timeline running down each channel strip."""
+    COLUMN = 180
+
+    def __init__(self):
+        super().__init__()
+        self.setMinimumSize(180, 360)
+
+    def set_project(self, project, peaks):
+        super().set_project(project, peaks)
+        self.setMinimumSize(max(180, len(project.tracks)*self.COLUMN), 360)
+
+    def mouseMoveEvent(self, event):
+        if self.project and self.drag_origin is None:
+            index = int(event.position().x()//self.COLUMN)
+            if 0 <= index < len(self.project.tracks):
+                track = self.project.tracks[index]
+                self.setToolTip(track.name+' · '+self.channel_description(track)+'\n'+tr('Clic: mover cursor. Arrastrar: definir bucle. Arrastra un extremo ámbar para ajustarlo. Esc: cancelar.'))
+        Timeline.mouseMoveEvent(self, event)
+
     def wave_rect(self, index):
-        return QRectF(index*self.COLUMN+14, 94, 80, max(1, self.height()-122))
+        return QRectF(index*self.COLUMN+14, 108, 80, max(1, self.height()-136))
 
     def layout_strips(self):
-        super().layout_strips()
-        for i, (_, _, fader, value, _, _) in enumerate(self.strips):
+        for i, (mute, solo, fader, value, rename, channels) in enumerate(self.strips):
             x = i*self.COLUMN
-            fader.setGeometry(x+104, 94, 28, max(40, self.height()-122))
+            rename.setGeometry(x+140, 12, 24, 24)
+            mute.setGeometry(x+14, 40, 30, 28)
+            solo.setGeometry(x+56, 40, 30, 28)
+            channels.setGeometry(x+98, 40, 30, 28)
+            self.channel_labels[i].setGeometry(x+14, 70, 150, 16)
+            fader.setGeometry(x+104, 108, 28, max(40, self.height()-136))
             value.setGeometry(x+98, self.height()-25, 78, 22)
 
     def time_axis(self, point):
@@ -479,7 +633,7 @@ class VerticalConsole(Console):
             self.draw_track_name(p, i, track)
             p.setFont(QFont(QApplication.font().family(), 8))
             p.setPen(QColor('#8fa0b5'))
-            p.drawText(x+14, 87, clock_text(self.view_start/self.project.rate)+' ↓')
+            p.drawText(x+14, 102, clock_text(self.view_start/self.project.rate)+' ↓')
             p.drawText(QRectF(x+14, self.height()-25, 84, 22), Qt.AlignLeft, clock_text((self.view_start+self.span)/self.project.rate))
             p.fillRect(rect, QColor('#111720'))
             p.save()
@@ -654,7 +808,7 @@ class Window(QMainWindow):
         self.locate_button = QPushButton(tr('Localizar WAV…'))
         self.locate_button.clicked.connect(self.locate_dialog)
         self.project_menu = compact_menu(tr('Proyecto'), (self.rename_button, self.prepare_button,
-            self.templates_button, self.problems_button, self.locate_button), self)
+            self.templates_button, self.locate_button), self)
         self.notice = QPushButton(tr('Avisos'))
         self.notice.setEnabled(False)
         self.notice.clicked.connect(lambda: show_report(self, tr('Observaciones del proyecto'), '\n'.join(self.project.warnings)) if self.project else None)
@@ -685,6 +839,9 @@ class Window(QMainWindow):
         toolbar.addWidget(self.open_menu)
         toolbar.addWidget(self.project_menu)
         toolbar.addWidget(self.notice)
+        self.problems_button.setText(tr("Analizar…"))
+        self.problems_button.setToolTip(tr("Analizar tomas marcadas o la toma abierta: audio faltante, silencio, nivel bajo y posible saturación."))
+        toolbar.addWidget(self.problems_button)
         toolbar.addWidget(self.about_button)
         toolbar.addStretch()
         self.view_mode = QComboBox()
@@ -1011,6 +1168,12 @@ class Window(QMainWindow):
         a, b = p.export_range or (0, p.length)
         self.subtitle.setText(tr('{0} pistas · {1:g} kHz · Exportar {2} → {3}', len(p.tracks), p.rate / 1000, clock_text(a / p.rate), clock_text(b / p.rate)))
         for view in (self.timeline, self.console, self.vertical_console):
+            if isinstance(view, Console):
+                view.refresh_labels()
+            else:
+                for i, track in enumerate(p.tracks):
+                    if i < len(view.rename_controls):
+                        view.rename_controls[i].setToolTip(track.name+'\n'+tr('Etiquetar esta pista con el nombre del instrumento'))
             view.update()
         self.refresh_loop_label()
         self.filter_library()

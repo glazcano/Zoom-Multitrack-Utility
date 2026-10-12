@@ -155,8 +155,9 @@ fader.setValue(-120)
 mute.setChecked(True)
 assert abs(window.project.tracks[0].gain-10**(-.6)) < 1e-10
 assert window.project.tracks[0].mute
-QTest.mouseClick(window.console, Qt.LeftButton, pos=QPoint(120, 150))
-assert window.player.position == window.console.sample_at(QPoint(120, 150))
+console_point = window.console.wave_rect(0).center().toPoint()
+QTest.mouseClick(window.console, Qt.LeftButton, pos=console_point)
+assert window.player.position == window.console.sample_at(console_point)
 position = window.player.position
 window.view_mode.setCurrentIndex(0)
 assert window.timeline.controls[0].isChecked()
@@ -170,6 +171,57 @@ window.seek(12345)
 app.processEvents()
 window.tick()
 assert window.grab().save('test-output/console.png')
+# Shared waveform axes stay aligned across rows and remain separate from mixer input.
+console = window.console
+rect0, rect1 = console.wave_rect(0), console.wave_rect(1)
+assert rect0.left() == rect1.left() and rect0.width() == rect1.width()
+assert rect0.width() > 500
+assert console.sample_at(rect0.center()) == console.sample_at(rect1.center())
+assert console.sample_at(QPoint(100, console.mixer_top+120)) is None
+assert console.strips[0][2].height() < 200
+assert console.channel_labels[0].text() == 'Stereo · 2 channels'
+assert window.project.tracks[0].name in console.strips[0][4].toolTip()
+assert window.problems_button.parentWidget() is window.action_scroll.widget()
+assert window.problems_button.isEnabled()
+gain = console.strips[0][2]
+QTest.mouseDClick(gain, Qt.LeftButton, pos=gain.handle_rect().center())
+assert gain.value() == 0 and window.project.tracks[0].gain == 1
+gain.setValue(-120)
+# Deterministic hold/clip expiration: peaks never change the listening gain.
+with patch('h8studio.widgets.time.monotonic', return_value=100):
+    gain.set_peak(1.1)
+with patch('h8studio.widgets.time.monotonic', return_value=100.2):
+    gain.set_peak(.1)
+    assert gain.held_peak == 1.1 and gain.clip_until == 102
+with patch('h8studio.widgets.time.monotonic', return_value=101.3):
+    gain.expire_peak()
+    assert gain.held_peak == .1 and gain.hold_timer.isActive()
+with patch('h8studio.widgets.time.monotonic', return_value=102.1):
+    gain.expire_peak()
+    assert not gain.hold_timer.isActive() and gain.value() == -120
+gain.set_peak(0)
+# Mixer scrolling must not alter the shared time axis, including on narrow windows.
+from dataclasses import replace
+from h8studio.ui import Console
+many = Console()
+many_project = replace(window.project, tracks=[replace(window.project.tracks[i%2], name=f'Instrument {i}') for i in range(12)])
+many.set_project(many_project, window.timeline.peaks)
+many.resize(650, 620)
+many.show()
+app.processEvents()
+axis = many.wave_rect(0)
+position_before = many.sample_at(axis.center())
+bar = many.mixer_area.horizontalScrollBar()
+assert bar.maximum() > 0
+bar.setValue(bar.maximum())
+app.processEvents()
+assert many.wave_rect(0) == axis and many.sample_at(axis.center()) == position_before
+assert many.wave_rect(11).bottom() < many.mixer_top
+assert all(f.y()+f.height() <= many.mixer_area.viewport().height()-26 for f in many.faders)
+assert not many.grab().isNull()
+assert many.grab().save('test-output/console-narrow.png')
+many.close()
+many.deleteLater()
 window.view_mode.setCurrentIndex(2)
 app.processEvents()
 assert window.views.currentWidget() is window.vertical_scroll
@@ -269,6 +321,8 @@ with patch('h8studio.ui.QInputDialog.getText', return_value=('Guitar', True)):
     window.vertical_console.strips[0][4].click()
 assert window.project.tracks[0].name == 'Guitar'
 assert read_project(source).tracks[0].name == 'Guitar'
+assert window.console.strips[0][4].toolTip().startswith('Guitar ·')
+assert window.vertical_console.strips[0][4].toolTip().startswith('Guitar ·')
 output_root = Path(temporary.name)/'ui-exports'
 output_root.mkdir()
 before = window.current_export_options()
@@ -338,6 +392,7 @@ window.view_mode.setCurrentIndex(1)
 window.console.strips[0][5].click()
 wait_job()
 assert len(window.console.strips) == 3 and window.view_mode.currentIndex() == 1
+assert [label.text() for label in window.console.channel_labels[:2]] == ['Mono · L', 'Mono · R']
 window.console.strips[0][5].click()
 wait_job()
 assert len(window.console.strips) == 2 and window.view_mode.currentIndex() == 1
@@ -359,7 +414,8 @@ for index, view in enumerate((window.timeline, window.console, window.vertical_c
     if index == 0:
         point = lambda f: QPoint(round(view.LEFT+f*(view.width()-view.LEFT-28)), 25)
     elif index == 1:
-        point = lambda f: QPoint(round(14+f*(view.COLUMN-28)), 140)
+        rect = view.wave_rect(0)
+        point = lambda f: QPoint(round(rect.left()+f*rect.width()), round(rect.center().y()))
     else:
         rect = view.wave_rect(0)
         point = lambda f: QPoint(round(rect.center().x()), round(rect.top()+f*rect.height()))
@@ -401,6 +457,16 @@ window.console.meter_values = [.2, .08]
 app.processEvents()
 Path('test-output').mkdir(exist_ok=True)
 assert window.grab().save('test-output/app.png')
+# Analyze uses the existing worker and leaves source project/audio untouched.
+window.library.item(0).setCheckState(Qt.Unchecked)
+before_analysis = source.read_bytes()
+with patch('h8studio.ui.show_report') as report:
+    window.problems_button.click()
+    wait_job()
+    assert report.called
+    assert 'ERROR:' not in report.call_args.args[2]
+    assert all(t.name+': peak ' in report.call_args.args[2] for t in window.project.tracks)
+assert source.read_bytes() == before_analysis
 window.close()
 # About shows runtime dependencies and saves language for the next launch.
 assert window.about_button.text() == 'About…'
@@ -419,6 +485,7 @@ window.preferences.save()
 spanish = Window(state_path=window.preferences.path)
 assert spanish.about_button.text() == 'Acerca de…'
 assert spanish.play_button.text() == '▶  Reproducir'
+assert spanish.problems_button.text() == 'Analizar…'
 spanish_about = AboutDialog(spanish.preferences, spanish)
 assert spanish_about.windowTitle() == 'Acerca de H8 Studio'
 assert spanish_about.findChild(QDialogButtonBox).button(QDialogButtonBox.Save).text() == 'Guardar'
